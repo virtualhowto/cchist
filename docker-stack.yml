@@ -5,7 +5,7 @@ services:
       - t3_swarm
     volumes:
       - type: bind
-        source: /srv/cchist/lidar/web
+        source: /mnt/usb/stack/cchist/lidar/web
         target: /usr/share/nginx/html/lidar
         read_only: true
     deploy:
