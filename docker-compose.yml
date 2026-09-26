@@ -1,0 +1,17 @@
+services:
+  cchist:
+    build: .
+    container_name: cchist
+    restart: unless-stopped
+    networks:
+      - t3_proxy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.cchist.rule=Host(`cchist.virtualhowto.com`)
+      - traefik.http.routers.cchist.entrypoints=websecure
+      - traefik.http.routers.cchist.tls=true
+      - traefik.http.services.cchist.loadbalancer.server.port=80
+
+networks:
+  t3_proxy:
+    external: true
