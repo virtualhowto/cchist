@@ -37,10 +37,31 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build and push image
+      - name: Build image
         run: |
           set -euo pipefail
           docker build --pull -t "$IMAGE" .
+
+      - name: Smoke test image
+        run: |
+          set -euo pipefail
+          name="cchist-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker run -d --name "$name" "$IMAGE"
+          for i in $(seq 1 20); do
+            if docker exec "$name" wget -qO- http://127.0.0.1/index.html >/dev/null; then
+              docker exec "$name" wget -qO- http://127.0.0.1/data/places.json >/dev/null
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$name" || true
+          exit 1
+
+      - name: Push image
+        run: |
+          set -euo pipefail
           docker push "$IMAGE"
 
       - name: Deploy stack
