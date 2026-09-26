@@ -27,7 +27,7 @@ def list_objects(prefix, delimiter=None, continuation=None):
     return {"url": url, "content_type": ctype, "keys": keys, "prefixes": prefixes, "truncated": truncated, "next": nxt}
 
 
-def walk_prefix(prefix, limit_pages=20):
+def walk_prefix(prefix, limit_pages=200):
     out=[]; token=None
     for _ in range(limit_pages):
         page=list_objects(prefix, continuation=token)
@@ -42,13 +42,19 @@ def classify(keys):
     dem=[]; laz=[]; other=[]
     for k in keys:
         low=k.lower()
-        if low.endswith((".tif", ".tiff", ".asc", ".zip")) and ("1m-dem" in low or "dem" in low):
+        # Avoid metadata/report files; only actual raster/archive payloads.
+        is_meta = "/metadata/" in low or low.endswith((".html", ".htm", ".xml", ".pdf", ".txt", ".json", ".shp", ".dbf", ".shx", ".prj"))
+        if not is_meta and low.endswith((".tif", ".tiff", ".asc", ".zip")) and ("1m-dem" in low or "/dem" in low or "dem_" in low):
             dem.append(k)
-        elif low.endswith((".laz", ".las", ".zip")) and any(x in low for x in ("point", "lidar", "laz", "las")):
+        elif not is_meta and low.endswith((".laz", ".las", ".zip")) and any(x in low for x in ("point-cloud", "pointcloud", "lidar", "/laz", "/las")):
             laz.append(k)
         else:
             other.append(k)
     return dem,laz,other
+
+
+def depth(prefix):
+    return len([x for x in prefix.split('/') if x])
 
 
 def main():
@@ -56,9 +62,14 @@ def main():
     ap.add_argument("--survey", default="Gosford202008")
     ap.add_argument("--json", default="")
     ap.add_argument("--manifest", default="")
+    ap.add_argument("--max-prefixes", type=int, default=200)
     args=ap.parse_args()
 
-    probes = [
+    result={"survey":args.survey,"bucket":BUCKET,"probes":{},"survey_prefixes":[],"survey_keys":[]}
+    survey_lc=args.survey.lower()
+
+    # Start from known and likely roots, then recursively follow relevant folder names.
+    queue=[
         "elevation/",
         "elevation/1m-dem/",
         "elevation/1m-dem/z56/",
@@ -66,58 +77,62 @@ def main():
         "elevation/point-cloud/",
         "elevation/pointcloud/",
         "elevation/lidar/",
+        "elevation/laz/",
         "point-cloud/",
+        "pointcloud/",
         "lidar/",
+        "laz/",
     ]
-    result={"survey":args.survey,"bucket":BUCKET,"probes":{},"survey_keys":[]}
-    all_keys=[]
-    for p in probes:
+    seen=set()
+    survey_prefixes=set()
+    interesting_terms=("1m-dem","point","cloud","lidar","laz","las","z56",survey_lc)
+
+    while queue and len(seen) < args.max_prefixes:
+        p=queue.pop(0)
+        if p in seen: continue
+        seen.add(p)
         try:
             page=list_objects(p, delimiter="/")
             result["probes"][p]={"prefixes":page["prefixes"],"keys":page["keys"][:50],"content_type":page["content_type"]}
             print(f"PROBE {p}: prefixes={len(page['prefixes'])} keys={len(page['keys'])}")
-            for x in page["prefixes"][:50]: print("  PREFIX",x)
+            for x in page["prefixes"][:60]: print("  PREFIX",x)
             for x in page["keys"][:20]: print("  KEY",x)
+
+            if survey_lc in p.lower(): survey_prefixes.add(p)
+            for child in page["prefixes"]:
+                cl=child.lower()
+                if survey_lc in cl:
+                    survey_prefixes.add(child)
+                # Traverse only a bounded number of relevant branches.
+                if depth(child) <= 6 and any(t in cl for t in interesting_terms):
+                    if child not in seen: queue.append(child)
         except Exception as e:
             result["probes"][p]={"error":str(e)}
             print(f"PROBE {p}: ERROR {e}")
 
-    # Known DEM survey prefix from the public metadata URL.
-    known=f"elevation/1m-dem/z56/{args.survey}/"
-    try:
-        keys=walk_prefix(known)
-        all_keys.extend(keys)
-        result["survey_keys"].extend(keys)
-        print(f"SURVEY {known}: {len(keys)} objects")
-    except Exception as e:
-        print(f"SURVEY {known}: ERROR {e}")
+    # Always include the exact known DEM prefix from the user's public metadata URL.
+    survey_prefixes.add(f"elevation/1m-dem/z56/{args.survey}/")
+    result["survey_prefixes"]=sorted(survey_prefixes)
 
-    # Any discovered prefix containing the survey name is worth walking.
-    discovered=set()
-    for p,info in result["probes"].items():
-        for x in info.get("prefixes",[]):
-            if args.survey.lower() in x.lower(): discovered.add(x)
-    for p in sorted(discovered):
-        if p == known: continue
+    for p in sorted(survey_prefixes):
         try:
             keys=walk_prefix(p)
-            all_keys.extend(keys)
             result["survey_keys"].extend(keys)
             print(f"SURVEY {p}: {len(keys)} objects")
         except Exception as e:
             print(f"SURVEY {p}: ERROR {e}")
 
-    # De-duplicate and classify.
     keys=sorted(set(result["survey_keys"]))
     result["survey_keys"]=keys
     dem,laz,other=classify(keys)
     result["dem_keys"]=dem
     result["laz_keys"]=laz
+    result["other_keys"]=other[:500]
     print(f"Classified: DEM={len(dem)} LAZ/LAS={len(laz)} OTHER={len(other)}")
 
     if args.manifest:
         with open(args.manifest,"w",encoding="utf-8") as f:
-            f.write("# Auto-discovered NSW ELVIS S3 objects\n")
+            f.write("# Auto-discovered NSW ELVIS S3 objects for %s\n" % args.survey)
             for k in dem:
                 f.write(f"dem|{BUCKET}/{urllib.parse.quote(k, safe='/')}|\n")
             for k in laz:
@@ -127,11 +142,12 @@ def main():
         with open(args.json,"w",encoding="utf-8") as f: json.dump(result,f,indent=2)
         print(f"JSON written: {args.json}")
 
-    # Discovery is considered useful if the bucket can be enumerated, even if
-    # point-cloud paths need a second probe after we see the actual prefixes.
-    if not result["probes"].get("elevation/",{}).get("prefixes") and not keys:
-        return 3
-    return 0
+    # Success means we could enumerate something useful from the public bucket.
+    if dem or laz:
+        return 0
+    if any(info.get("prefixes") or info.get("keys") for info in result["probes"].values() if isinstance(info,dict)):
+        return 4
+    return 3
 
 if __name__ == "__main__":
     sys.exit(main())
