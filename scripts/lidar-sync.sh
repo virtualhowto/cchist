@@ -4,7 +4,9 @@ set -euo pipefail
 ROOT="${LIDAR_ROOT:-/mnt/usb/stack/cchist/lidar}"
 MANIFEST="${1:-data/lidar-downloads.txt}"
 PROCESS="${2:-true}"
-GDAL_IMAGE="ghcr.io/osgeo/gdal:ubuntu-full-3.10.0"
+# Official OSGeo release image. Use ubuntu-small: it includes GDAL Python and
+# all raster features required here, while being much smaller than ubuntu-full.
+GDAL_IMAGE="ghcr.io/osgeo/gdal:ubuntu-small-3.13.3"
 RUNNER_UID="$(id -u)"
 RUNNER_GID="$(id -g)"
 
@@ -33,6 +35,32 @@ if [[ ! -f "$MANIFEST" ]]; then
   exit 1
 fi
 
+download_file() {
+  local url="$1" dest="$2"
+  local local_size=0 remote_size=""
+
+  if [[ -f "$dest" ]]; then
+    local_size="$(stat -c '%s' "$dest" 2>/dev/null || echo 0)"
+    remote_size="$(curl -fsSIL --retry 3 --retry-delay 2 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="content-length:" {v=$2} END {print v}')"
+
+    if [[ "$remote_size" =~ ^[0-9]+$ ]] && (( local_size == remote_size )); then
+      echo "Already downloaded: $(basename "$dest") ($local_size bytes)"
+      return 0
+    fi
+
+    if [[ "$remote_size" =~ ^[0-9]+$ ]] && (( local_size > remote_size )); then
+      echo "Local file is larger than source; restarting download: $(basename "$dest")"
+      rm -f "$dest"
+      local_size=0
+    elif (( local_size > 0 )); then
+      echo "Resuming $(basename "$dest") from $local_size bytes"
+    fi
+  fi
+
+  curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 \
+    --continue-at - --output "$dest" "$url"
+}
+
 count=0
 while IFS='|' read -r type url sha || [[ -n "${type:-}" ]]; do
   type="${type%%#*}"
@@ -48,7 +76,7 @@ while IFS='|' read -r type url sha || [[ -n "${type:-}" ]]; do
   fi
   dest="$ROOT/raw/$type/$name"
   echo "Downloading [$type] $name"
-  curl --fail --location --retry 5 --retry-delay 5 --continue-at - --output "$dest" "$url"
+  download_file "$url" "$dest"
 
   if [[ -n "$sha" ]]; then
     echo "$sha  $dest" | sha256sum -c -
@@ -58,8 +86,8 @@ done < "$MANIFEST"
 
 echo "Manifest downloads processed: $count"
 
-# Extract archives without mutating originals. Re-running is safe: existing
-# members are replaced with the same source data.
+# Extract archives without mutating originals. A marker tied to source mtime
+# avoids repeatedly unpacking the multi-gigabyte GA archive on every retry.
 python3 - "$ROOT" <<'PY'
 import os, sys, zipfile, tarfile
 root=sys.argv[1]
@@ -72,15 +100,21 @@ for base, _, files in os.walk(os.path.join(root,'raw')):
         src=os.path.join(base,fn)
         stem=os.path.splitext(fn)[0]
         target=os.path.join(out,stem)
+        marker=os.path.join(target,'.cchist-extracted')
         try:
+            if os.path.isfile(marker) and os.path.getmtime(marker) >= os.path.getmtime(src):
+                print(f'Already extracted: {src}')
+                continue
             if zipfile.is_zipfile(src):
                 os.makedirs(target,exist_ok=True)
                 print(f'Extracting {src} -> {target}')
                 with zipfile.ZipFile(src) as z:z.extractall(target)
+                open(marker,'w').write('ok\n')
             elif tarfile.is_tarfile(src):
                 os.makedirs(target,exist_ok=True)
                 print(f'Extracting {src} -> {target}')
                 with tarfile.open(src) as t:t.extractall(target,filter='data')
+                open(marker,'w').write('ok\n')
         except Exception as e:
             print(f'Archive extraction warning for {src}: {e}', file=sys.stderr)
 PY
@@ -103,8 +137,18 @@ fi
 CPUS="$(nproc)"
 echo "Generating Central Coast terrain products with $CPUS CPUs"
 
-docker pull "$GDAL_IMAGE"
-docker run --rm --entrypoint /bin/bash -v "$ROOT:/data" "$GDAL_IMAGE" -lc "
+# Deploy jobs log in to ghcr.io with this repository's GITHUB_TOKEN and Docker
+# persists those credentials on the self-hosted runner. Presenting that scoped
+# token to another organisation's public GHCR package can return 'denied'. Use
+# an empty, temporary DOCKER_CONFIG so the OSGeo image is pulled anonymously,
+# without modifying the runner's normal Docker credentials.
+GDAL_DOCKER_CONFIG="$(mktemp -d "$ROOT/working/docker-anon.XXXXXX")"
+printf '%s\n' '{"auths":{}}' > "$GDAL_DOCKER_CONFIG/config.json"
+cleanup_gdal_config() { rm -rf "$GDAL_DOCKER_CONFIG"; }
+trap cleanup_gdal_config EXIT
+
+DOCKER_CONFIG="$GDAL_DOCKER_CONFIG" docker pull "$GDAL_IMAGE"
+DOCKER_CONFIG="$GDAL_DOCKER_CONFIG" docker run --rm --entrypoint /bin/bash -v "$ROOT:/data" "$GDAL_IMAGE" -lc "
   set -euo pipefail
   find /data/raw -type f \( -iname '*.tif' -o -iname '*.tiff' \) | sort > /data/working/dem-list.txt
   echo 'DEM inputs:'
