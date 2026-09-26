@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       manifest_url:
-        description: Optional URL to a TYPE|URL|SHA256 manifest. Leave blank to auto-discover ELVIS data.
+        description: Optional URL to a TYPE|URL|SHA256 manifest. Leave blank to use the repository manifest.
         required: false
         type: string
       process:
@@ -22,9 +22,11 @@ on:
       - scripts/elvis-backend-probe.sh
       - .github/workflows/lidar-sync.yml
 
+# Only the newest dataset definition matters. Superseded discovery/download runs
+# are cancelled so a stale queued job cannot block the repo's single NUC runner.
 concurrency:
   group: cchist-lidar
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   sync:
@@ -43,28 +45,12 @@ jobs:
           test "$(hostname)" = "NUC8i7HNK"
           docker info >/dev/null
           echo '=== Filesystems ==='
-          df -hT / /srv /mnt/usb 2>&1 || true
-          echo '=== Block devices ==='
-          lsblk -o NAME,SIZE,FSTYPE,FSAVAIL,FSUSE%,MOUNTPOINTS 2>&1 || true
+          df -hT / /mnt/usb 2>&1 || true
           echo '=== /mnt/usb mount ==='
-          findmnt -T /mnt/usb 2>/dev/null || true
+          findmnt -T /mnt/usb
           mkdir -p "$LIDAR_ROOT"
 
-      - name: Probe current ELVIS frontend
-        if: ${{ inputs.manifest_url == '' || inputs.manifest_url == null }}
-        run: |
-          set -euo pipefail
-          chmod +x scripts/elvis-frontend-probe.sh
-          scripts/elvis-frontend-probe.sh
-
-      - name: Probe current GA customer backend
-        if: ${{ inputs.manifest_url == '' || inputs.manifest_url == null }}
-        run: |
-          set -euo pipefail
-          chmod +x scripts/elvis-backend-probe.sh
-          scripts/elvis-backend-probe.sh
-
-      - name: Resolve or discover manifest
+      - name: Resolve manifest
         id: manifest
         shell: bash
         run: |
@@ -82,15 +68,17 @@ jobs:
             exit 0
           fi
 
-          echo "No curated download URLs found; querying the ELVIS catalogue for Central Coast NSW"
-          chmod +x scripts/elvis-discover.py
+          echo "No curated download URLs found. Probing current ELVIS services before fallback discovery."
+          chmod +x scripts/elvis-frontend-probe.sh scripts/elvis-backend-probe.sh scripts/elvis-discover.py
+          scripts/elvis-frontend-probe.sh || true
+          scripts/elvis-backend-probe.sh || true
           scripts/elvis-discover.py \
             --bbox 150.95 -33.62 151.65 -33.10 \
             --manifest "$RUNNER_TEMP/lidar-downloads.txt" \
             --json "$RUNNER_TEMP/elvis-central-coast.json"
           echo "path=$RUNNER_TEMP/lidar-downloads.txt" >> "$GITHUB_OUTPUT"
 
-      - name: Preview discovered manifest
+      - name: Preview manifest
         run: |
           set -euo pipefail
           manifest='${{ steps.manifest.outputs.path }}'
@@ -113,6 +101,7 @@ jobs:
           du -sh "$LIDAR_ROOT/raw" 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
           du -sh "$LIDAR_ROOT/derived" 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
           du -sh "$LIDAR_ROOT/web" 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
+          df -h "$LIDAR_ROOT" 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
           test -f "$LIDAR_ROOT/web/status.json" && cat "$LIDAR_ROOT/web/status.json" | tee -a "$GITHUB_STEP_SUMMARY" || true
 
       - name: Force cchist service refresh
