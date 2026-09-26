@@ -3,6 +3,15 @@ name: Deploy cchist to Swarm
 on:
   push:
     branches: [main]
+    paths:
+      - Dockerfile
+      - nginx.conf
+      - index.html
+      - docker-stack.yml
+      - data/places.json
+      - data/historic-maps.json
+      - .dockerignore
+      - .github/workflows/deploy-swarm.yml
   workflow_dispatch:
 
 permissions:
@@ -32,7 +41,8 @@ jobs:
       - name: Prepare persistent LiDAR storage
         run: |
           set -euo pipefail
-          docker run --rm -v /srv/cchist:/data alpine:3.22 sh -c 'mkdir -p /data/lidar/web && chmod 755 /data /data/lidar /data/lidar/web'
+          mkdir -p /mnt/usb/stack/cchist/lidar/web
+          chmod 755 /mnt/usb/stack/cchist /mnt/usb/stack/cchist/lidar /mnt/usb/stack/cchist/lidar/web
 
       - name: Set image tag
         run: |
@@ -109,7 +119,7 @@ jobs:
           echo "- Stack: cchist" >> "$GITHUB_STEP_SUMMARY"
           echo "- Image: $IMAGE" >> "$GITHUB_STEP_SUMMARY"
           echo "- Site: https://cchist.virtualhowto.com" >> "$GITHUB_STEP_SUMMARY"
-          echo "- LiDAR web root: /srv/cchist/lidar/web" >> "$GITHUB_STEP_SUMMARY"
+          echo "- LiDAR web root: /mnt/usb/stack/cchist/lidar/web" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Service diagnostics on failure
         if: failure()
