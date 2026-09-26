@@ -5,10 +5,12 @@ ROOT="${LIDAR_ROOT:-/srv/cchist/lidar}"
 MANIFEST="${1:-data/lidar-downloads.txt}"
 PROCESS="${2:-true}"
 GDAL_IMAGE="ghcr.io/osgeo/gdal:ubuntu-full-3.10.0"
+RUNNER_UID="$(id -u)"
+RUNNER_GID="$(id -g)"
 
 mkdir_host_tree() {
   docker run --rm -v /srv/cchist:/data alpine:3.22 sh -c \
-    'mkdir -p /data/lidar/raw/dem /data/lidar/raw/laz /data/lidar/raw/extracted /data/lidar/derived /data/lidar/working /data/lidar/web/hillshade /data/lidar/web/slope /data/lidar/web/tri && chmod -R a+rX /data/lidar'
+    "mkdir -p /data/lidar/raw/dem /data/lidar/raw/laz /data/lidar/raw/extracted /data/lidar/derived /data/lidar/working /data/lidar/web/hillshade /data/lidar/web/slope /data/lidar/web/tri && chown -R ${RUNNER_UID}:${RUNNER_GID} /data/lidar && chmod -R u+rwX,go+rX /data/lidar"
 }
 
 mkdir_host_tree
@@ -114,6 +116,9 @@ docker run --rm --entrypoint /bin/bash -v "$ROOT:/data" "$GDAL_IMAGE" -lc "
   gdal2tiles.py --xyz --processes=$CPUS -z 9-17 -w none /data/derived/tri.tif /data/web/tri
   chmod -R a+rX /data/web
 "
+
+# Restore runner ownership so later incremental syncs can overwrite generated files.
+mkdir_host_tree
 
 python3 - "$ROOT" <<'PY'
 import os,sys,json,datetime
