@@ -19,6 +19,7 @@ on:
       - scripts/lidar-sync.sh
       - scripts/elvis-discover.py
       - scripts/elvis-frontend-probe.sh
+      - scripts/elvis-backend-probe.sh
       - .github/workflows/lidar-sync.yml
 
 concurrency:
@@ -30,7 +31,7 @@ jobs:
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 720
     env:
-      LIDAR_ROOT: /srv/cchist/lidar
+      LIDAR_ROOT: /mnt/usb/stack/cchist/lidar
 
     steps:
       - name: Checkout
@@ -47,6 +48,7 @@ jobs:
           lsblk -o NAME,SIZE,FSTYPE,FSAVAIL,FSUSE%,MOUNTPOINTS 2>&1 || true
           echo '=== /mnt/usb mount ==='
           findmnt -T /mnt/usb 2>/dev/null || true
+          mkdir -p "$LIDAR_ROOT"
 
       - name: Probe current ELVIS frontend
         if: ${{ inputs.manifest_url == '' || inputs.manifest_url == null }}
@@ -54,6 +56,13 @@ jobs:
           set -euo pipefail
           chmod +x scripts/elvis-frontend-probe.sh
           scripts/elvis-frontend-probe.sh
+
+      - name: Probe current GA customer backend
+        if: ${{ inputs.manifest_url == '' || inputs.manifest_url == null }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/elvis-backend-probe.sh
+          scripts/elvis-backend-probe.sh
 
       - name: Resolve or discover manifest
         id: manifest
