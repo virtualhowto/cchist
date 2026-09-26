@@ -1,0 +1,80 @@
+name: Sync Central Coast LiDAR
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_url:
+        description: Optional URL to a TYPE|URL|SHA256 manifest. Leave blank to use data/lidar-downloads.txt.
+        required: false
+        type: string
+      process:
+        description: Generate web hillshade, slope and terrain-ruggedness tiles after download
+        required: true
+        default: true
+        type: boolean
+  push:
+    branches: [main]
+    paths:
+      - data/lidar-downloads.txt
+      - scripts/lidar-sync.sh
+      - .github/workflows/lidar-sync.yml
+
+concurrency:
+  group: cchist-lidar
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 720
+    env:
+      LIDAR_ROOT: /srv/cchist/lidar
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify runner host and disk
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "NUC8i7HNK"
+          docker info >/dev/null
+          df -h /srv || true
+
+      - name: Resolve manifest
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          url='${{ inputs.manifest_url }}'
+          if [ -n "$url" ]; then
+            curl --fail --location --retry 5 "$url" -o "$RUNNER_TEMP/lidar-downloads.txt"
+            echo "path=$RUNNER_TEMP/lidar-downloads.txt" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=data/lidar-downloads.txt" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download and build LiDAR layers
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/lidar-sync.sh
+          process='${{ inputs.process }}'
+          if [ -z "$process" ]; then process=true; fi
+          scripts/lidar-sync.sh '${{ steps.manifest.outputs.path }}' "$process"
+
+      - name: Show storage summary
+        if: always()
+        run: |
+          echo "### LiDAR storage" >> "$GITHUB_STEP_SUMMARY"
+          du -sh /srv/cchist/lidar/raw 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
+          du -sh /srv/cchist/lidar/derived 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
+          du -sh /srv/cchist/lidar/web 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
+          test -f /srv/cchist/lidar/web/status.json && cat /srv/cchist/lidar/web/status.json | tee -a "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Force cchist service refresh
+        if: success()
+        run: |
+          if docker service inspect cchist_cchist >/dev/null 2>&1; then
+            docker service update --force cchist_cchist >/dev/null
+          fi
