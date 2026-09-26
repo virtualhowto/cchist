@@ -3,8 +3,16 @@ services:
     image: ${IMAGE}
     networks:
       - t3_swarm
+    volumes:
+      - type: bind
+        source: /srv/cchist/lidar/web
+        target: /usr/share/nginx/html/lidar
+        read_only: true
     deploy:
       replicas: 1
+      placement:
+        constraints:
+          - node.hostname==NUC8i7HNK
       restart_policy:
         condition: any
       update_config:
@@ -14,7 +22,7 @@ services:
         order: stop-first
       resources:
         limits:
-          memory: 128M
+          memory: 192M
       labels:
         - traefik.enable=true
         - traefik.constraint=proxy-public
