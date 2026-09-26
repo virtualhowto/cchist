@@ -92,20 +92,16 @@ jobs:
           echo "Acquisition manifest: total=$entries DEM=$dem_entries LAZ=$laz_entries"
           sed -n '1,60p' "$RUNNER_TEMP/elvis/manifest.txt"
 
-      - name: ELVIS browser fallback probe
-        if: ${{ steps.manifest.outputs.entries == '0' }}
+      - name: ELVIS browser order fallback
+        if: ${{ steps.manifest.outputs.entries == '0' && github.event_name == 'workflow_dispatch' && inputs.submit_order == true }}
         env:
           ELVIS_EMAIL: ${{ secrets.ELVIS_EMAIL }}
           ELVIS_INDUSTRY: ${{ vars.ELVIS_INDUSTRY }}
         run: |
           set -euo pipefail
-          args=''
-          if [ '${{ inputs.submit_order }}' = 'true' ]; then
-            if [ -z "${ELVIS_EMAIL:-}" ]; then
-              echo 'ELVIS_EMAIL repository secret is required for browser order fallback.'
-            else
-              args='--order'
-            fi
+          if [ -z "${ELVIS_EMAIL:-}" ]; then
+            echo 'ELVIS_EMAIL repository secret is required for browser order fallback.'
+            exit 2
           fi
           docker run --rm \
             -e ELVIS_EMAIL \
@@ -121,7 +117,7 @@ jobs:
               npm init -y >/dev/null 2>&1
               npm install --no-audit --no-fund --silent playwright@1.55.0
               cp /work/scripts/elvis-browser.mjs ./elvis-browser.mjs
-              node ./elvis-browser.mjs '"$args"'
+              node ./elvis-browser.mjs --order
             '
 
       - name: Discovery summary
