@@ -1,0 +1,15 @@
+# Central Coast LiDAR / DEM download manifest
+#
+# Format:
+#   TYPE|URL|OPTIONAL_SHA256
+#
+# TYPE is either:
+#   dem  - bare-earth DEM archive/GeoTIFF from ELVIS
+#   laz  - classified point cloud archive/LAZ from ELVIS
+#
+# The self-hosted runner downloads these into /srv/cchist/lidar/raw.
+# Large files are NOT committed to Git.
+#
+# Example only (replace with direct ELVIS download URLs):
+# dem|https://example.invalid/central-coast-dem.zip|
+# laz|https://example.invalid/central-coast-lidar.zip|
