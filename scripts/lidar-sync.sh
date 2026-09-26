@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${LIDAR_ROOT:-/srv/cchist/lidar}"
+ROOT="${LIDAR_ROOT:-/mnt/usb/stack/cchist/lidar}"
 MANIFEST="${1:-data/lidar-downloads.txt}"
 PROCESS="${2:-true}"
 GDAL_IMAGE="ghcr.io/osgeo/gdal:ubuntu-full-3.10.0"
@@ -9,8 +9,10 @@ RUNNER_UID="$(id -u)"
 RUNNER_GID="$(id -g)"
 
 mkdir_host_tree() {
-  docker run --rm -v /srv/cchist:/data alpine:3.22 sh -c \
-    "mkdir -p /data/lidar/raw/dem /data/lidar/raw/laz /data/lidar/raw/extracted /data/lidar/derived /data/lidar/working /data/lidar/web/hillshade /data/lidar/web/slope /data/lidar/web/tri && chown -R ${RUNNER_UID}:${RUNNER_GID} /data/lidar && chmod -R u+rwX,go+rX /data/lidar"
+  mkdir -p "$ROOT/raw/dem" "$ROOT/raw/laz" "$ROOT/raw/extracted" \
+    "$ROOT/derived" "$ROOT/working" "$ROOT/web/hillshade" "$ROOT/web/slope" "$ROOT/web/tri"
+  docker run --rm -v "$ROOT:/data" alpine:3.22 sh -c \
+    "chown -R ${RUNNER_UID}:${RUNNER_GID} /data && chmod -R u+rwX,go+rX /data"
 }
 
 mkdir_host_tree
@@ -48,7 +50,6 @@ done < "$MANIFEST"
 
 echo "Manifest downloads processed: $count"
 
-# Extract zip/tar packages without mutating the original downloads.
 python3 - "$ROOT" <<'PY'
 import os, sys, zipfile, tarfile
 root=sys.argv[1]
@@ -77,7 +78,6 @@ if [[ "$PROCESS" != "true" ]]; then
   exit 0
 fi
 
-# There must be at least one DEM GeoTIFF to generate web analysis layers.
 if ! find "$ROOT/raw" -type f \( -iname '*.tif' -o -iname '*.tiff' \) -print -quit | grep -q .; then
   echo "No DEM GeoTIFFs found yet. Download completed; tile generation skipped."
   python3 - "$ROOT/web/status.json" <<'PY'
@@ -117,7 +117,6 @@ docker run --rm --entrypoint /bin/bash -v "$ROOT:/data" "$GDAL_IMAGE" -lc "
   chmod -R a+rX /data/web
 "
 
-# Restore runner ownership so later incremental syncs can overwrite generated files.
 mkdir_host_tree
 
 python3 - "$ROOT" <<'PY'
