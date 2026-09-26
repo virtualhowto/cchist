@@ -45,8 +45,7 @@ jobs:
           df -hT / /srv /mnt/usb 2>&1 || true
           echo '=== Block devices ==='
           lsblk -o NAME,SIZE,FSTYPE,FSAVAIL,FSUSE%,MOUNTPOINTS 2>&1 || true
-          echo '=== Candidate storage roots ==='
-          du -sh /mnt/usb 2>/dev/null || true
+          echo '=== /mnt/usb mount ==='
           findmnt -T /mnt/usb 2>/dev/null || true
 
       - name: Probe current ELVIS frontend
