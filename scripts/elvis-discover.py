@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import os
 import re
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
 DEFAULT_ENDPOINT = "https://elvis-ga.fmecloud.com/fmedatastreaming/elvis_indexes/ReturnDownloadables.fmw"
 DEFAULT_BBOX = (150.95, -33.62, 151.65, -33.10)
+ELVIS_APP = "https://elevation.fsdf.org.au/"
+UA = "Mozilla/5.0 cchist-elvis-discovery/1.1"
 
 
 def polygon_from_bbox(b):
@@ -16,16 +18,84 @@ def polygon_from_bbox(b):
     return f"POLYGON (({xmin} {ymin},{xmax} {ymin},{xmax} {ymax},{xmin} {ymax},{xmin} {ymin}))"
 
 
+def request_bytes(url, timeout=180):
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.geturl(), r.status, r.headers, r.read()
+
+
 def fetch_json(endpoint, polygon):
     url = endpoint + "?" + urllib.parse.urlencode({"polygon": polygon})
-    req = urllib.request.Request(url, headers={"User-Agent": "cchist-elvis-discovery/1.0"})
-    with urllib.request.urlopen(req, timeout=180) as r:
-        body = r.read()
-    return url, json.loads(body.decode("utf-8"))
+    final, _, _, body = request_bytes(url)
+    return final, json.loads(body.decode("utf-8"))
+
+
+def probe_frontend():
+    print("Legacy ELVIS catalogue endpoint is protected; probing the current public frontend...")
+    try:
+        final, status, headers, body = request_bytes(ELVIS_APP, timeout=60)
+    except Exception as e:
+        print(f"Frontend probe failed: {e}")
+        return
+    html = body.decode("utf-8", "replace")
+    print(f"Frontend: HTTP {status} {final} bytes={len(body)}")
+
+    assets = []
+    for m in re.finditer(r'''(?:src|href)=["']([^"']+\.(?:js|mjs)(?:\?[^"']*)?)["']''', html, re.I):
+        assets.append(urllib.parse.urljoin(final, m.group(1)))
+    assets = list(dict.fromkeys(assets))
+    print(f"JavaScript assets found: {len(assets)}")
+    for a in assets[:20]:
+        print(f"  asset {a}")
+
+    needles = ("fmecloud", "fmedatastreaming", "returndownloadables", "order data", "orderdata", "downloadables", "api/", "/api", "email", "polygon")
+    url_re = re.compile(r'https?://[^"\'\\\s)<>]+')
+    candidates = set()
+    snippets = []
+
+    texts = [(final, html)]
+    for a in assets[:25]:
+        try:
+            af, ast, _, ab = request_bytes(a, timeout=60)
+            txt = ab.decode("utf-8", "replace")
+            print(f"Fetched asset HTTP {ast} bytes={len(ab)} {af}")
+            texts.append((af, txt))
+        except Exception as e:
+            print(f"Asset fetch warning {a}: {e}")
+
+    for src, txt in texts:
+        low = txt.lower()
+        for u in url_re.findall(txt):
+            ul = u.lower()
+            if any(n in ul for n in ("fme", "elvis", "elevation", "api", "download", "order")):
+                candidates.add(u[:500])
+        for needle in needles:
+            start = 0
+            found = 0
+            while found < 4:
+                i = low.find(needle, start)
+                if i < 0:
+                    break
+                s = max(0, i - 220); e = min(len(txt), i + 420)
+                snippets.append((src, needle, txt[s:e].replace("\n", " ")[:700]))
+                start = i + len(needle); found += 1
+
+    print("Candidate endpoint URLs:")
+    for u in sorted(candidates)[:80]:
+        print(f"  {u}")
+    print("Relevant frontend snippets:")
+    seen = set()
+    for src, needle, snippet in snippets:
+        key = (needle, snippet)
+        if key in seen:
+            continue
+        seen.add(key)
+        print(f"[{needle}] {src}: {snippet}")
+        if len(seen) >= 80:
+            break
 
 
 def rows_from_node(node):
-    """Recursively yield dicts that look like downloadable catalogue rows."""
     if isinstance(node, dict):
         lower = {str(k).lower(): v for k, v in node.items()}
         keys = set(lower)
@@ -62,7 +132,7 @@ def classify(name, row):
 def normalise_url(url, row):
     if url.startswith("http://") or url.startswith("https://"):
         return url
-    for k, v in row.items():
+    for v in row.values():
         if isinstance(v, str) and v.startswith(("http://", "https://")):
             return v
     return ""
@@ -84,7 +154,18 @@ def main():
     args = ap.parse_args()
 
     polygon = polygon_from_bbox(tuple(args.bbox))
-    url, data = fetch_json(args.endpoint, polygon)
+    try:
+        url, data = fetch_json(args.endpoint, polygon)
+    except urllib.error.HTTPError as e:
+        print(f"Legacy catalogue request returned HTTP {e.code}: {e.reason}")
+        if e.code in (401, 403, 404):
+            probe_frontend()
+        return 3
+    except Exception as e:
+        print(f"ELVIS catalogue request failed: {e}")
+        probe_frontend()
+        return 3
+
     with open(args.json, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
@@ -103,9 +184,7 @@ def main():
             continue
         candidates.append((typ, year_of(name, row), name, dl))
 
-    # De-duplicate URLs, and when requested retain only the newest survey year per type.
-    seen = set()
-    unique = []
+    seen = set(); unique = []
     for c in sorted(candidates, key=lambda x: (x[0], -x[1], x[2])):
         if c[3] not in seen:
             seen.add(c[3]); unique.append(c)
@@ -118,11 +197,10 @@ def main():
 
     with open(args.manifest, "w", encoding="utf-8") as f:
         f.write("# Generated automatically from ELVIS for Central Coast NSW\n")
-        for typ, year, name, dl in unique:
+        for typ, _, _, dl in unique:
             f.write(f"{typ}|{dl}|\n")
 
-    counts = {"dem": 0, "laz": 0}
-    years = {"dem": set(), "laz": set()}
+    counts = {"dem": 0, "laz": 0}; years = {"dem": set(), "laz": set()}
     for typ, year, _, _ in unique:
         counts[typ] += 1
         if year: years[typ].add(year)
@@ -133,7 +211,6 @@ def main():
     print(f"Generated manifest: {args.manifest}")
 
     if not unique:
-        # Useful diagnostic without dumping the entire potentially huge response.
         print("No direct download rows recognised. Sample JSON structure:")
         print(json.dumps(data, indent=2)[:12000])
         return 2
