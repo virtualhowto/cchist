@@ -18,6 +18,7 @@ on:
       - data/lidar-downloads.txt
       - scripts/lidar-sync.sh
       - scripts/elvis-discover.py
+      - scripts/elvis-frontend-probe.sh
       - .github/workflows/lidar-sync.yml
 
 concurrency:
@@ -35,12 +36,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify runner host and disk
+      - name: Verify runner host and storage
         run: |
           set -euo pipefail
           test "$(hostname)" = "NUC8i7HNK"
           docker info >/dev/null
-          df -h /srv || true
+          echo '=== Filesystems ==='
+          df -hT / /srv /mnt/usb 2>&1 || true
+          echo '=== Block devices ==='
+          lsblk -o NAME,SIZE,FSTYPE,FSAVAIL,FSUSE%,MOUNTPOINTS 2>&1 || true
+          echo '=== Candidate storage roots ==='
+          du -sh /mnt/usb 2>/dev/null || true
+          findmnt -T /mnt/usb 2>/dev/null || true
+
+      - name: Probe current ELVIS frontend
+        if: ${{ inputs.manifest_url == '' || inputs.manifest_url == null }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/elvis-frontend-probe.sh
+          scripts/elvis-frontend-probe.sh
 
       - name: Resolve or discover manifest
         id: manifest
@@ -54,7 +68,6 @@ jobs:
             exit 0
           fi
 
-          # Prefer explicitly curated real entries if present in the repository manifest.
           if grep -Ev '^[[:space:]]*(#|$)' data/lidar-downloads.txt | grep -qE '^(dem|laz)\|https?://'; then
             echo "Using curated repository manifest"
             echo "path=data/lidar-downloads.txt" >> "$GITHUB_OUTPUT"
@@ -89,10 +102,10 @@ jobs:
         if: always()
         run: |
           echo "### LiDAR storage" >> "$GITHUB_STEP_SUMMARY"
-          du -sh /srv/cchist/lidar/raw 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
-          du -sh /srv/cchist/lidar/derived 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
-          du -sh /srv/cchist/lidar/web 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
-          test -f /srv/cchist/lidar/web/status.json && cat /srv/cchist/lidar/web/status.json | tee -a "$GITHUB_STEP_SUMMARY" || true
+          du -sh "$LIDAR_ROOT/raw" 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
+          du -sh "$LIDAR_ROOT/derived" 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
+          du -sh "$LIDAR_ROOT/web" 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
+          test -f "$LIDAR_ROOT/web/status.json" && cat "$LIDAR_ROOT/web/status.json" | tee -a "$GITHUB_STEP_SUMMARY" || true
 
       - name: Force cchist service refresh
         if: success()
