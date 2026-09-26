@@ -8,6 +8,13 @@ GDAL_IMAGE="ghcr.io/osgeo/gdal:ubuntu-full-3.10.0"
 RUNNER_UID="$(id -u)"
 RUNNER_GID="$(id -g)"
 
+# Broad Central Coast NSW AOI. Crop before reprojection/tile generation so a
+# state/national source archive does not produce web tiles outside the project.
+AOI_XMIN="${AOI_XMIN:-150.95}"
+AOI_YMIN="${AOI_YMIN:--33.62}"
+AOI_XMAX="${AOI_XMAX:-151.65}"
+AOI_YMAX="${AOI_YMAX:--33.10}"
+
 mkdir_host_tree() {
   mkdir -p "$ROOT/raw/dem" "$ROOT/raw/laz" "$ROOT/raw/extracted" \
     "$ROOT/derived" "$ROOT/working" "$ROOT/web/hillshade" "$ROOT/web/slope" "$ROOT/web/tri"
@@ -19,6 +26,7 @@ mkdir_host_tree
 
 echo "LiDAR root: $ROOT"
 echo "Manifest: $MANIFEST"
+echo "Central Coast AOI: $AOI_XMIN,$AOI_YMIN,$AOI_XMAX,$AOI_YMAX (EPSG:4326)"
 
 if [[ ! -f "$MANIFEST" ]]; then
   echo "Manifest not found: $MANIFEST"
@@ -50,6 +58,8 @@ done < "$MANIFEST"
 
 echo "Manifest downloads processed: $count"
 
+# Extract archives without mutating originals. Re-running is safe: existing
+# members are replaced with the same source data.
 python3 - "$ROOT" <<'PY'
 import os, sys, zipfile, tarfile
 root=sys.argv[1]
@@ -65,9 +75,11 @@ for base, _, files in os.walk(os.path.join(root,'raw')):
         try:
             if zipfile.is_zipfile(src):
                 os.makedirs(target,exist_ok=True)
+                print(f'Extracting {src} -> {target}')
                 with zipfile.ZipFile(src) as z:z.extractall(target)
             elif tarfile.is_tarfile(src):
                 os.makedirs(target,exist_ok=True)
+                print(f'Extracting {src} -> {target}')
                 with tarfile.open(src) as t:t.extractall(target,filter='data')
         except Exception as e:
             print(f'Archive extraction warning for {src}: {e}', file=sys.stderr)
@@ -89,21 +101,28 @@ PY
 fi
 
 CPUS="$(nproc)"
-echo "Generating derived terrain products with $CPUS CPUs"
+echo "Generating Central Coast terrain products with $CPUS CPUs"
 
 docker pull "$GDAL_IMAGE"
 docker run --rm --entrypoint /bin/bash -v "$ROOT:/data" "$GDAL_IMAGE" -lc "
   set -euo pipefail
   find /data/raw -type f \( -iname '*.tif' -o -iname '*.tiff' \) | sort > /data/working/dem-list.txt
-  gdalbuildvrt -overwrite -input_file_list /data/working/dem-list.txt /data/derived/dem.vrt
-  gdalwarp -overwrite -t_srs EPSG:3857 -r bilinear -multi -wo NUM_THREADS=ALL_CPUS \
-    -co TILED=YES -co COMPRESS=DEFLATE -co BIGTIFF=YES \
-    /data/derived/dem.vrt /data/derived/dem-3857.tif
+  echo 'DEM inputs:'
+  cat /data/working/dem-list.txt
+  gdalbuildvrt -overwrite -input_file_list /data/working/dem-list.txt /data/derived/dem-source.vrt
 
-  gdaldem hillshade /data/derived/dem-3857.tif /data/derived/hillshade.tif \
+  # Crop in geographic coordinates while reprojecting to Web Mercator. This is
+  # especially important for GA's multi-gigabyte national Zone 56 mosaic.
+  gdalwarp -overwrite \
+    -te_srs EPSG:4326 -te $AOI_XMIN $AOI_YMIN $AOI_XMAX $AOI_YMAX \
+    -t_srs EPSG:3857 -r bilinear -multi -wo NUM_THREADS=ALL_CPUS \
+    -co TILED=YES -co COMPRESS=DEFLATE -co BIGTIFF=IF_SAFER \
+    /data/derived/dem-source.vrt /data/derived/dem-central-coast-3857.tif
+
+  gdaldem hillshade /data/derived/dem-central-coast-3857.tif /data/derived/hillshade.tif \
     -multidirectional -compute_edges
-  gdaldem slope /data/derived/dem-3857.tif /data/derived/slope-float.tif -compute_edges
-  gdaldem TRI /data/derived/dem-3857.tif /data/derived/tri-float.tif -compute_edges
+  gdaldem slope /data/derived/dem-central-coast-3857.tif /data/derived/slope-float.tif -compute_edges
+  gdaldem TRI /data/derived/dem-central-coast-3857.tif /data/derived/tri-float.tif -compute_edges
 
   gdal_translate -ot Byte -scale 0 90 0 255 -co TILED=YES -co COMPRESS=DEFLATE \
     /data/derived/slope-float.tif /data/derived/slope.tif
@@ -119,7 +138,7 @@ docker run --rm --entrypoint /bin/bash -v "$ROOT:/data" "$GDAL_IMAGE" -lc "
 
 mkdir_host_tree
 
-python3 - "$ROOT" <<'PY'
+python3 - "$ROOT" "$AOI_XMIN" "$AOI_YMIN" "$AOI_XMAX" "$AOI_YMAX" <<'PY'
 import os,sys,json,datetime
 root=sys.argv[1]
 def count(ext,where):
@@ -130,6 +149,7 @@ def count(ext,where):
 status={
   'ready': True,
   'updated': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+  'aoi': {'xmin':float(sys.argv[2]),'ymin':float(sys.argv[3]),'xmax':float(sys.argv[4]),'ymax':float(sys.argv[5]),'crs':'EPSG:4326'},
   'raw': {
     'lazFiles': count('.laz',os.path.join(root,'raw')),
     'demFiles': count('.tif',os.path.join(root,'raw'))+count('.tiff',os.path.join(root,'raw'))
