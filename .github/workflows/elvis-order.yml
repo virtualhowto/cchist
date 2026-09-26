@@ -1,15 +1,16 @@
-name: Automate ELVIS 1m Order
+name: Acquire NSW ELVIS 1m LiDAR
 
 on:
   push:
     branches: [main]
     paths:
+      - scripts/nsw-elvis-s3-discover.py
       - scripts/elvis-browser.mjs
       - .github/workflows/elvis-order.yml
   workflow_dispatch:
     inputs:
       submit_order:
-        description: Submit a real ELVIS order (requires ELVIS_EMAIL repository secret)
+        description: Use the ELVIS browser order fallback if direct S3 discovery finds nothing
         required: true
         default: false
         type: boolean
@@ -18,37 +19,61 @@ concurrency:
   group: cchist-elvis-order
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
-  elvis:
+  discover:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      s3_entries: ${{ steps.s3.outputs.entries }}
+      dem_entries: ${{ steps.s3.outputs.dem_entries }}
+      laz_entries: ${{ steps.s3.outputs.laz_entries }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify Docker
+      - name: Discover public NSW ELVIS S3 objects
+        id: s3
+        shell: bash
         run: |
           set -euo pipefail
-          docker info >/dev/null
+          mkdir -p "$RUNNER_TEMP/elvis"
+          chmod +x scripts/nsw-elvis-s3-discover.py
+          set +e
+          python3 scripts/nsw-elvis-s3-discover.py \
+            --survey Gosford202008 \
+            --manifest "$RUNNER_TEMP/elvis/s3-manifest.txt" \
+            --json "$RUNNER_TEMP/elvis/s3-discovery.json"
+          rc=$?
+          set -e
+          echo "discovery_rc=$rc"
+          touch "$RUNNER_TEMP/elvis/s3-manifest.txt"
+          entries=$(grep -Ec '^(dem|laz)\|https?://' "$RUNNER_TEMP/elvis/s3-manifest.txt" || true)
+          dem_entries=$(grep -Ec '^dem\|https?://' "$RUNNER_TEMP/elvis/s3-manifest.txt" || true)
+          laz_entries=$(grep -Ec '^laz\|https?://' "$RUNNER_TEMP/elvis/s3-manifest.txt" || true)
+          echo "entries=$entries" >> "$GITHUB_OUTPUT"
+          echo "dem_entries=$dem_entries" >> "$GITHUB_OUTPUT"
+          echo "laz_entries=$laz_entries" >> "$GITHUB_OUTPUT"
+          echo "Direct S3 manifest entries: total=$entries DEM=$dem_entries LAZ=$laz_entries"
+          sed -n '1,40p' "$RUNNER_TEMP/elvis/s3-manifest.txt"
 
-      - name: Inspect or submit ELVIS order
+      - name: ELVIS browser fallback probe
+        if: ${{ steps.s3.outputs.entries == '0' }}
         env:
           ELVIS_EMAIL: ${{ secrets.ELVIS_EMAIL }}
           ELVIS_INDUSTRY: ${{ vars.ELVIS_INDUSTRY }}
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/elvis"
-          mode='inspect'
-          if [ '${{ inputs.submit_order }}' = 'true' ]; then mode='order'; fi
           args=''
-          if [ "$mode" = 'order' ]; then
+          if [ '${{ inputs.submit_order }}' = 'true' ]; then
             if [ -z "${ELVIS_EMAIL:-}" ]; then
-              echo 'ELVIS_EMAIL repository secret is required to submit an order.'
-              exit 2
+              echo 'ELVIS_EMAIL repository secret is required for browser order fallback.'
+            else
+              args='--order'
             fi
-            args='--order'
           fi
-
           docker run --rm \
             -e ELVIS_EMAIL \
             -e ELVIS_INDUSTRY="${ELVIS_INDUSTRY:-Other}" \
@@ -66,21 +91,65 @@ jobs:
               node ./elvis-browser.mjs '"$args"'
             '
 
-      - name: Summarise live ELVIS UI
+      - name: Discovery summary
         if: always()
         run: |
-          echo '### ELVIS browser probe' >> "$GITHUB_STEP_SUMMARY"
-          for f in "$RUNNER_TEMP"/elvis/*-text.txt; do
-            [ -f "$f" ] || continue
-            echo "#### $(basename "$f")" >> "$GITHUB_STEP_SUMMARY"
-            sed -n '1,100p' "$f" | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
-          done
+          echo '### NSW ELVIS 1 m discovery' >> "$GITHUB_STEP_SUMMARY"
+          echo "- Survey: Gosford202008" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Direct objects: ${{ steps.s3.outputs.entries }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- DEM entries: ${{ steps.s3.outputs.dem_entries }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- LAZ/LAS entries: ${{ steps.s3.outputs.laz_entries }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$RUNNER_TEMP/elvis/s3-manifest.txt" ]; then
+            echo '```text' >> "$GITHUB_STEP_SUMMARY"
+            sed -n '1,20p' "$RUNNER_TEMP/elvis/s3-manifest.txt" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
-      - name: Upload ELVIS diagnostics
+      - name: Upload discovery manifest and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: elvis-browser-${{ github.run_id }}
+          name: elvis-discovery-${{ github.run_id }}
           path: ${{ runner.temp }}/elvis/
           if-no-files-found: warn
           retention-days: 7
+
+  sync-1m:
+    needs: discover
+    if: ${{ needs.discover.outputs.s3_entries != '0' }}
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 720
+    env:
+      LIDAR_ROOT: /mnt/usb/stack/cchist/lidar
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify NUC and storage
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "NUC8i7HNK"
+          test -d /mnt/usb
+          df -h /mnt/usb
+
+      - name: Download discovery manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: elvis-discovery-${{ github.run_id }}
+          path: ${{ runner.temp }}/elvis
+
+      - name: Download and process 1 m NSW ELVIS data
+        run: |
+          set -euo pipefail
+          manifest="$RUNNER_TEMP/elvis/s3-manifest.txt"
+          test -s "$manifest"
+          echo "Using $(grep -Ec '^(dem|laz)\|' "$manifest") NSW ELVIS objects"
+          chmod +x scripts/lidar-sync.sh
+          scripts/lidar-sync.sh "$manifest" true
+
+      - name: Refresh cchist
+        if: success()
+        run: |
+          if docker service inspect cchist_cchist >/dev/null 2>&1; then
+            docker service update --force cchist_cchist >/dev/null
+          fi
