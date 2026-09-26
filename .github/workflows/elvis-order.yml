@@ -4,13 +4,14 @@ on:
   push:
     branches: [main]
     paths:
+      - scripts/nsw-elvis-object-probe.py
       - scripts/nsw-elvis-s3-discover.py
       - scripts/elvis-browser.mjs
       - .github/workflows/elvis-order.yml
   workflow_dispatch:
     inputs:
       submit_order:
-        description: Use the ELVIS browser order fallback if direct S3 discovery finds nothing
+        description: Use the ELVIS browser order fallback if direct discovery finds nothing
         required: true
         default: false
         type: boolean
@@ -27,19 +28,39 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
-      s3_entries: ${{ steps.s3.outputs.entries }}
-      dem_entries: ${{ steps.s3.outputs.dem_entries }}
-      laz_entries: ${{ steps.s3.outputs.laz_entries }}
+      entries: ${{ steps.manifest.outputs.entries }}
+      dem_entries: ${{ steps.manifest.outputs.dem_entries }}
+      laz_entries: ${{ steps.manifest.outputs.laz_entries }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Discover public NSW ELVIS S3 objects
-        id: s3
+      - name: Probe known Gosford202008 metadata and sibling objects
+        id: object
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/elvis"
+          chmod +x scripts/nsw-elvis-object-probe.py
+          set +e
+          python3 scripts/nsw-elvis-object-probe.py \
+            --manifest "$RUNNER_TEMP/elvis/object-manifest.txt" \
+            --json "$RUNNER_TEMP/elvis/object-probe.json"
+          rc=$?
+          set -e
+          echo "object_probe_rc=$rc"
+          touch "$RUNNER_TEMP/elvis/object-manifest.txt"
+          entries=$(grep -Ec '^(dem|laz)\|https?://' "$RUNNER_TEMP/elvis/object-manifest.txt" || true)
+          echo "entries=$entries" >> "$GITHUB_OUTPUT"
+          echo "Known-object probe entries: $entries"
+          sed -n '1,40p' "$RUNNER_TEMP/elvis/object-manifest.txt"
+
+      - name: Try unsigned NSW ELVIS bucket discovery
+        id: s3
+        if: ${{ steps.object.outputs.entries == '0' }}
+        shell: bash
+        run: |
+          set -euo pipefail
           chmod +x scripts/nsw-elvis-s3-discover.py
           set +e
           python3 scripts/nsw-elvis-s3-discover.py \
@@ -48,19 +69,31 @@ jobs:
             --json "$RUNNER_TEMP/elvis/s3-discovery.json"
           rc=$?
           set -e
-          echo "discovery_rc=$rc"
+          echo "s3_discovery_rc=$rc"
           touch "$RUNNER_TEMP/elvis/s3-manifest.txt"
-          entries=$(grep -Ec '^(dem|laz)\|https?://' "$RUNNER_TEMP/elvis/s3-manifest.txt" || true)
-          dem_entries=$(grep -Ec '^dem\|https?://' "$RUNNER_TEMP/elvis/s3-manifest.txt" || true)
-          laz_entries=$(grep -Ec '^laz\|https?://' "$RUNNER_TEMP/elvis/s3-manifest.txt" || true)
+
+      - name: Build acquisition manifest
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > "$RUNNER_TEMP/elvis/manifest.txt"
+          for f in "$RUNNER_TEMP/elvis/object-manifest.txt" "$RUNNER_TEMP/elvis/s3-manifest.txt"; do
+            [ -f "$f" ] || continue
+            grep -E '^(dem|laz)\|https?://' "$f" >> "$RUNNER_TEMP/elvis/manifest.txt" || true
+          done
+          sort -u -o "$RUNNER_TEMP/elvis/manifest.txt" "$RUNNER_TEMP/elvis/manifest.txt"
+          entries=$(grep -Ec '^(dem|laz)\|https?://' "$RUNNER_TEMP/elvis/manifest.txt" || true)
+          dem_entries=$(grep -Ec '^dem\|https?://' "$RUNNER_TEMP/elvis/manifest.txt" || true)
+          laz_entries=$(grep -Ec '^laz\|https?://' "$RUNNER_TEMP/elvis/manifest.txt" || true)
           echo "entries=$entries" >> "$GITHUB_OUTPUT"
           echo "dem_entries=$dem_entries" >> "$GITHUB_OUTPUT"
           echo "laz_entries=$laz_entries" >> "$GITHUB_OUTPUT"
-          echo "Direct S3 manifest entries: total=$entries DEM=$dem_entries LAZ=$laz_entries"
-          sed -n '1,40p' "$RUNNER_TEMP/elvis/s3-manifest.txt"
+          echo "Acquisition manifest: total=$entries DEM=$dem_entries LAZ=$laz_entries"
+          sed -n '1,60p' "$RUNNER_TEMP/elvis/manifest.txt"
 
       - name: ELVIS browser fallback probe
-        if: ${{ steps.s3.outputs.entries == '0' }}
+        if: ${{ steps.manifest.outputs.entries == '0' }}
         env:
           ELVIS_EMAIL: ${{ secrets.ELVIS_EMAIL }}
           ELVIS_INDUSTRY: ${{ vars.ELVIS_INDUSTRY }}
@@ -96,12 +129,12 @@ jobs:
         run: |
           echo '### NSW ELVIS 1 m discovery' >> "$GITHUB_STEP_SUMMARY"
           echo "- Survey: Gosford202008" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Direct objects: ${{ steps.s3.outputs.entries }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- DEM entries: ${{ steps.s3.outputs.dem_entries }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- LAZ/LAS entries: ${{ steps.s3.outputs.laz_entries }}" >> "$GITHUB_STEP_SUMMARY"
-          if [ -f "$RUNNER_TEMP/elvis/s3-manifest.txt" ]; then
+          echo "- Direct objects: ${{ steps.manifest.outputs.entries }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- DEM entries: ${{ steps.manifest.outputs.dem_entries }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- LAZ/LAS entries: ${{ steps.manifest.outputs.laz_entries }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f "$RUNNER_TEMP/elvis/manifest.txt" ]; then
             echo '```text' >> "$GITHUB_STEP_SUMMARY"
-            sed -n '1,20p' "$RUNNER_TEMP/elvis/s3-manifest.txt" >> "$GITHUB_STEP_SUMMARY"
+            sed -n '1,30p' "$RUNNER_TEMP/elvis/manifest.txt" >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -116,7 +149,7 @@ jobs:
 
   sync-1m:
     needs: discover
-    if: ${{ needs.discover.outputs.s3_entries != '0' }}
+    if: ${{ needs.discover.outputs.entries != '0' }}
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 720
     env:
@@ -141,7 +174,7 @@ jobs:
       - name: Download and process 1 m NSW ELVIS data
         run: |
           set -euo pipefail
-          manifest="$RUNNER_TEMP/elvis/s3-manifest.txt"
+          manifest="$RUNNER_TEMP/elvis/manifest.txt"
           test -s "$manifest"
           echo "Using $(grep -Ec '^(dem|laz)\|' "$manifest") NSW ELVIS objects"
           chmod +x scripts/lidar-sync.sh
