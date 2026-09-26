@@ -4,12 +4,18 @@
 #   TYPE|URL|OPTIONAL_SHA256
 #
 # TYPE is either:
-#   dem  - bare-earth DEM archive/GeoTIFF from ELVIS
-#   laz  - classified point cloud archive/LAZ from ELVIS
+#   dem  - bare-earth DEM archive/GeoTIFF
+#   laz  - classified point cloud archive/LAZ
 #
-# The self-hosted runner downloads these into /srv/cchist/lidar/raw.
-# Large files are NOT committed to Git.
+# Large files are downloaded by the self-hosted runner into:
+#   /mnt/usb/stack/cchist/lidar/raw
+# They are NOT committed to Git or included in the application image.
 #
-# Example only (replace with direct ELVIS download URLs):
-# dem|https://example.invalid/central-coast-dem.zip|
-# laz|https://example.invalid/central-coast-lidar.zip|
+# Geoscience Australia national Zone 56 5 m LiDAR-derived DEM, GDA94/AUSGeoid.
+# This is an official direct-download source and provides the initial local
+# bare-earth DEM. The processing pipeline crops it to the Central Coast AOI
+# before generating web hillshade/slope/TRI tiles.
+dem|https://elevation-direct-downloads.s3-ap-southeast-2.amazonaws.com/5m-dem/national_utm_mosaics/nationalz56_ag.zip|
+#
+# Classified 1 m/raw LAZ sources will be added when current ELVIS catalogue
+# download/order endpoints have been resolved.
