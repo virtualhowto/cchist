@@ -49,15 +49,23 @@ jobs:
             fi
             args='--order'
           fi
+
           docker run --rm \
             -e ELVIS_EMAIL \
             -e ELVIS_INDUSTRY="${ELVIS_INDUSTRY:-Other}" \
             -e ELVIS_OUT=/out \
             -v "$GITHUB_WORKSPACE:/work:ro" \
             -v "$RUNNER_TEMP/elvis:/out" \
-            -w /work \
             mcr.microsoft.com/playwright:v1.55.0-noble \
-            bash -lc "node scripts/elvis-browser.mjs $args"
+            bash -lc '
+              set -euo pipefail
+              mkdir -p /tmp/elvis-run
+              cd /tmp/elvis-run
+              npm init -y >/dev/null 2>&1
+              npm install --no-audit --no-fund --silent playwright@1.55.0
+              cp /work/scripts/elvis-browser.mjs ./elvis-browser.mjs
+              node ./elvis-browser.mjs '"$args"'
+            '
 
       - name: Summarise live ELVIS UI
         if: always()
@@ -66,7 +74,7 @@ jobs:
           for f in "$RUNNER_TEMP"/elvis/*-text.txt; do
             [ -f "$f" ] || continue
             echo "#### $(basename "$f")" >> "$GITHUB_STEP_SUMMARY"
-            sed -n '1,80p' "$f" | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
+            sed -n '1,100p' "$f" | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
           done
 
       - name: Upload ELVIS diagnostics
