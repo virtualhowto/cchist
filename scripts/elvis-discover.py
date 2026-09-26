@@ -10,7 +10,7 @@ import urllib.request
 DEFAULT_ENDPOINT = "https://elvis-ga.fmecloud.com/fmedatastreaming/elvis_indexes/ReturnDownloadables.fmw"
 DEFAULT_BBOX = (150.95, -33.62, 151.65, -33.10)
 ELVIS_APP = "https://elevation.fsdf.org.au/"
-UA = "Mozilla/5.0 cchist-elvis-discovery/1.1"
+UA = "Mozilla/5.0 cchist-elvis-discovery/1.2"
 
 
 def polygon_from_bbox(b):
@@ -18,8 +18,11 @@ def polygon_from_bbox(b):
     return f"POLYGON (({xmin} {ymin},{xmax} {ymin},{xmax} {ymax},{xmin} {ymax},{xmin} {ymin}))"
 
 
-def request_bytes(url, timeout=180):
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
+def request_bytes(url, timeout=180, referer=None):
+    headers = {"User-Agent": UA, "Accept": "*/*"}
+    if referer:
+        headers["Referer"] = referer
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.geturl(), r.status, r.headers, r.read()
 
@@ -40,15 +43,19 @@ def probe_frontend():
     html = body.decode("utf-8", "replace")
     print(f"Frontend: HTTP {status} {final} bytes={len(body)}")
 
+    base_match = re.search(r'''<base\s+href=["']([^"']+)["']''', html, re.I)
+    asset_base = urllib.parse.urljoin(final, base_match.group(1)) if base_match else final
+    print(f"Frontend asset base: {asset_base}")
+
     assets = []
     for m in re.finditer(r'''(?:src|href)=["']([^"']+\.(?:js|mjs)(?:\?[^"']*)?)["']''', html, re.I):
-        assets.append(urllib.parse.urljoin(final, m.group(1)))
+        assets.append(urllib.parse.urljoin(asset_base, m.group(1)))
     assets = list(dict.fromkeys(assets))
     print(f"JavaScript assets found: {len(assets)}")
     for a in assets[:20]:
         print(f"  asset {a}")
 
-    needles = ("fmecloud", "fmedatastreaming", "returndownloadables", "order data", "orderdata", "downloadables", "api/", "/api", "email", "polygon")
+    needles = ("fmecloud", "fmedatastreaming", "returndownloadables", "order data", "orderdata", "downloadables", "api/", "/api", "email", "polygon", "order")
     url_re = re.compile(r'https?://[^"\'\\\s)<>]+')
     candidates = set()
     snippets = []
@@ -56,9 +63,10 @@ def probe_frontend():
     texts = [(final, html)]
     for a in assets[:25]:
         try:
-            af, ast, _, ab = request_bytes(a, timeout=60)
+            af, ast, ah, ab = request_bytes(a, timeout=60, referer=final)
+            ctype = ah.get("Content-Type", "")
             txt = ab.decode("utf-8", "replace")
-            print(f"Fetched asset HTTP {ast} bytes={len(ab)} {af}")
+            print(f"Fetched asset HTTP {ast} bytes={len(ab)} type={ctype} {af}")
             texts.append((af, txt))
         except Exception as e:
             print(f"Asset fetch warning {a}: {e}")
@@ -72,16 +80,16 @@ def probe_frontend():
         for needle in needles:
             start = 0
             found = 0
-            while found < 4:
+            while found < 6:
                 i = low.find(needle, start)
                 if i < 0:
                     break
-                s = max(0, i - 220); e = min(len(txt), i + 420)
-                snippets.append((src, needle, txt[s:e].replace("\n", " ")[:700]))
+                s = max(0, i - 260); e = min(len(txt), i + 520)
+                snippets.append((src, needle, txt[s:e].replace("\n", " ")[:900]))
                 start = i + len(needle); found += 1
 
     print("Candidate endpoint URLs:")
-    for u in sorted(candidates)[:80]:
+    for u in sorted(candidates)[:120]:
         print(f"  {u}")
     print("Relevant frontend snippets:")
     seen = set()
@@ -91,7 +99,7 @@ def probe_frontend():
             continue
         seen.add(key)
         print(f"[{needle}] {src}: {snippet}")
-        if len(seen) >= 80:
+        if len(seen) >= 120:
             break
 
 
