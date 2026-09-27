@@ -149,6 +149,16 @@
     if (!document.getElementById('markersToggle')?.checked) out.set('markers', '0');
     out.set('research', document.getElementById('yr')?.value || '1950');
 
+    const compareEnabled = document.getElementById('compareEnabled');
+    if (compareEnabled?.checked) {
+      out.set('compare', 'swipe');
+      const left = document.getElementById('compareLeft')?.value || '';
+      const right = document.getElementById('compareRight')?.value || '';
+      if (left) out.set('left', left);
+      if (right) out.set('right', right);
+      out.set('split', document.getElementById('compareSplit')?.value || '50');
+    }
+
     const next = `${location.pathname}?${out.toString()}${location.hash}`;
     history.replaceState(null, '', next);
   }
@@ -161,9 +171,9 @@
 
   function addListeners() {
     map.on('moveend', queueUrlUpdate);
-    document.querySelectorAll('input[name="base"],.lidarCheck,#markersToggle').forEach(el => el.addEventListener('change', queueUrlUpdate));
-    ['lidarEpoch', 'historicImageryYear'].forEach(id => document.getElementById(id)?.addEventListener('change', queueUrlUpdate));
-    ['overlayOpacity', 'imageryOpacity', 'yr'].forEach(id => document.getElementById(id)?.addEventListener('input', queueUrlUpdate));
+    document.querySelectorAll('input[name="base"],.lidarCheck,#markersToggle,#compareEnabled').forEach(el => el.addEventListener('change', queueUrlUpdate));
+    ['lidarEpoch', 'historicImageryYear', 'compareLeft', 'compareRight'].forEach(id => document.getElementById(id)?.addEventListener('change', queueUrlUpdate));
+    ['overlayOpacity', 'imageryOpacity', 'yr', 'compareSplit'].forEach(id => document.getElementById(id)?.addEventListener('input', queueUrlUpdate));
   }
 
   function addShareControl() {
@@ -171,7 +181,7 @@
     if (!panel || document.getElementById('copyViewLink')) return;
     const group = document.createElement('div');
     group.className = 'layerGroup';
-    group.innerHTML = '<h3>Share research view</h3><button id="copyViewLink" type="button" style="width:100%;min-height:42px;border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:9px;cursor:pointer">Copy view link</button><div id="copyViewStatus" class="layerStatus">URL tracks map position, imagery year and LiDAR epoch.</div>';
+    group.innerHTML = '<h3>Share research view</h3><button id="copyViewLink" type="button" style="width:100%;min-height:42px;border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:9px;cursor:pointer">Copy view link</button><div id="copyViewStatus" class="layerStatus">URL tracks map position, dated layers and swipe comparison.</div>';
     panel.appendChild(group);
     document.getElementById('copyViewLink').addEventListener('click', async () => {
       updateUrl();
