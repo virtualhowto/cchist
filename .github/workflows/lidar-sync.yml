@@ -113,7 +113,20 @@ jobs:
             echo 'Historic imagery catalogue refresh failed; retaining any previous catalogue.'
             exit 0
           }
+          chmod 644 "$LIDAR_ROOT/web/imagery.json"
           cat "$LIDAR_ROOT/web/imagery.json" | head -80
+
+      - name: Publish web permissions
+        if: always()
+        run: |
+          set -euo pipefail
+          root="$LIDAR_ROOT/web"
+          chmod 755 "$root"
+          find "$root" -type d -exec chmod a+rX {} +
+          find "$root" -maxdepth 1 -type f -exec chmod 644 {} +
+          for f in status.json imagery.json; do
+            test ! -e "$root/$f" || stat -c "$f: %a %U:%G %s bytes" "$root/$f"
+          done
 
       - name: Show storage summary
         if: always()
