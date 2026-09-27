@@ -10,6 +10,7 @@ COPY view-state.js /usr/share/nginx/html/view-state.js
 COPY layout.js /usr/share/nginx/html/layout.js
 COPY data /usr/share/nginx/html/data
 
+# Keep client-side research modules directly readable by the unprivileged nginx worker.
 RUN chmod 644 /usr/share/nginx/html/index.html /usr/share/nginx/html/compare.js /usr/share/nginx/html/compare-fix.js /usr/share/nginx/html/terrain-change.js /usr/share/nginx/html/imagery-filter.js /usr/share/nginx/html/view-state.js /usr/share/nginx/html/layout.js \
     && find /usr/share/nginx/html/data -type d -exec chmod 755 {} \; \
     && find /usr/share/nginx/html/data -type f -exec chmod 644 {} \;
