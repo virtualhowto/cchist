@@ -5,11 +5,12 @@ COPY index.html /usr/share/nginx/html/index.html
 COPY compare.js /usr/share/nginx/html/compare.js
 COPY compare-fix.js /usr/share/nginx/html/compare-fix.js
 COPY terrain-change.js /usr/share/nginx/html/terrain-change.js
+COPY imagery-filter.js /usr/share/nginx/html/imagery-filter.js
 COPY view-state.js /usr/share/nginx/html/view-state.js
 COPY layout.js /usr/share/nginx/html/layout.js
 COPY data /usr/share/nginx/html/data
 
-RUN chmod 644 /usr/share/nginx/html/index.html /usr/share/nginx/html/compare.js /usr/share/nginx/html/compare-fix.js /usr/share/nginx/html/terrain-change.js /usr/share/nginx/html/view-state.js /usr/share/nginx/html/layout.js \
+RUN chmod 644 /usr/share/nginx/html/index.html /usr/share/nginx/html/compare.js /usr/share/nginx/html/compare-fix.js /usr/share/nginx/html/terrain-change.js /usr/share/nginx/html/imagery-filter.js /usr/share/nginx/html/view-state.js /usr/share/nginx/html/layout.js \
     && find /usr/share/nginx/html/data -type d -exec chmod 755 {} \; \
     && find /usr/share/nginx/html/data -type f -exec chmod 644 {} \;
 
