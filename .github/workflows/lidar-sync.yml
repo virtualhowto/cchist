@@ -36,6 +36,7 @@ jobs:
     env:
       LIDAR_ROOT: /mnt/usb/stack/cchist/lidar
       PERMISSIONS_ONLY: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'Permissions-only') }}
+      CATALOGUE_ONLY: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'Imagery-only') }}
 
     steps:
       - name: Checkout
@@ -53,7 +54,7 @@ jobs:
           mkdir -p "$LIDAR_ROOT/web"
 
       - name: Resolve manifest
-        if: env.PERMISSIONS_ONLY != 'true'
+        if: env.PERMISSIONS_ONLY != 'true' && env.CATALOGUE_ONLY != 'true'
         id: manifest
         shell: bash
         run: |
@@ -82,7 +83,7 @@ jobs:
           echo "path=$RUNNER_TEMP/lidar-downloads.txt" >> "$GITHUB_OUTPUT"
 
       - name: Preview manifest
-        if: env.PERMISSIONS_ONLY != 'true'
+        if: env.PERMISSIONS_ONLY != 'true' && env.CATALOGUE_ONLY != 'true'
         run: |
           set -euo pipefail
           manifest='${{ steps.manifest.outputs.path }}'
@@ -90,7 +91,7 @@ jobs:
           sed -n '1,30p' "$manifest"
 
       - name: Download and build latest LiDAR layers
-        if: env.PERMISSIONS_ONLY != 'true'
+        if: env.PERMISSIONS_ONLY != 'true' && env.CATALOGUE_ONLY != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -100,7 +101,7 @@ jobs:
           bash scripts/lidar-sync.sh '${{ steps.manifest.outputs.path }}' "$process"
 
       - name: Build dated LiDAR hillshade epochs
-        if: env.PERMISSIONS_ONLY != 'true' && success() && (inputs.process == true || inputs.process == '')
+        if: env.PERMISSIONS_ONLY != 'true' && env.CATALOGUE_ONLY != 'true' && success() && (inputs.process == true || inputs.process == '')
         shell: bash
         run: |
           set -euo pipefail
@@ -117,7 +118,7 @@ jobs:
             echo 'Historic imagery catalogue refresh failed; retaining any previous catalogue.'
             exit 0
           }
-          cat "$LIDAR_ROOT/web/imagery.json" | head -80
+          cat "$LIDAR_ROOT/web/imagery.json" | head -120
 
       - name: Publish web permissions
         if: always()
@@ -134,7 +135,7 @@ jobs:
           done
 
       - name: Show storage summary
-        if: always() && env.PERMISSIONS_ONLY != 'true'
+        if: always() && env.PERMISSIONS_ONLY != 'true' && env.CATALOGUE_ONLY != 'true'
         run: |
           echo "### LiDAR storage" >> "$GITHUB_STEP_SUMMARY"
           du -sh "$LIDAR_ROOT/raw" 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
