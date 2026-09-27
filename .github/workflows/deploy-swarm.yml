@@ -8,6 +8,7 @@ on:
       - nginx.conf
       - index.html
       - compare.js
+      - compare-fix.js
       - view-state.js
       - layout.js
       - docker-stack.yml
@@ -80,6 +81,7 @@ jobs:
             if docker exec "$name" wget -qO- http://127.0.0.1/index.html >/dev/null; then
               docker exec "$name" wget -qO- http://127.0.0.1/data/places.json >/dev/null
               docker exec "$name" wget -qO- http://127.0.0.1/compare.js >/dev/null
+              docker exec "$name" wget -qO- http://127.0.0.1/compare-fix.js >/dev/null
               docker exec "$name" wget -qO- http://127.0.0.1/view-state.js >/dev/null
               docker exec "$name" wget -qO- http://127.0.0.1/layout.js >/dev/null
               exit 0
