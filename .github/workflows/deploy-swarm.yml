@@ -9,6 +9,7 @@ on:
       - index.html
       - nsw-config.js
       - compare-v3.js
+      - statewide-terrain.js
       - terrain-change.js
       - imagery-filter.js
       - research-scope-nsw.js
@@ -89,6 +90,7 @@ jobs:
                 data/places.json \
                 nsw-config.js \
                 compare-v3.js \
+                statewide-terrain.js \
                 terrain-change.js \
                 imagery-filter.js \
                 research-scope-nsw.js \
@@ -101,6 +103,7 @@ jobs:
               html=$(docker exec "$name" wget -qO- http://127.0.0.1/index.html)
               echo "$html" | grep -q '/nsw-config.js'
               echo "$html" | grep -q '/compare-v3.js'
+              echo "$html" | grep -q '/statewide-terrain.js'
               echo "$html" | grep -q '/research-scope-nsw.js'
               echo "$html" | grep -q '/elevation-index.js'
               echo "$html" | grep -q '/view-state-nsw.js'
@@ -170,6 +173,7 @@ jobs:
           echo "- Image: $IMAGE" >> "$GITHUB_STEP_SUMMARY"
           echo '- Scope: NSW-wide research/catalogues; high-resolution terrain is local-cache aware' >> "$GITHUB_STEP_SUMMARY"
           echo '- Swipe: left full layer + screen-space clipped right layer' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Terrain baseline: Geoscience Australia 5 m LiDAR-derived DEM WMS' >> "$GITHUB_STEP_SUMMARY"
           echo '- Site: https://cchist.virtualhowto.com' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Service diagnostics on failure
