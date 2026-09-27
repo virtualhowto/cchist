@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Discover NSW Spatial Services historical imagery and Central Coast coverage."""
 import argparse
+import concurrent.futures
 import json
 import math
 import re
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -13,14 +15,14 @@ SEARCH = PORTAL + "/sharing/rest/search"
 ITEM = PORTAL + "/sharing/rest/content/items/{id}"
 WEB_MERCATOR_WKIDS = {3857, 102100, 102113, 900913}
 AOI = [150.95, -33.62, 151.65, -33.10]  # west,south,east,north
-COVERAGE_ZOOM = 14
-TILEMAP_CHUNK = 32
+COVERAGE_ZOOM = 13
+PROBE_WORKERS = 20
 
 
 def get_json(url, params=None, timeout=30):
     if params:
         url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={"User-Agent": "cchist-historic-imagery/1.2"})
+    req = urllib.request.Request(url, headers={"User-Agent": "cchist-historic-imagery/1.3"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
 
@@ -77,34 +79,54 @@ def lonlat_to_tile(lon, lat, z):
     return max(0, min(n - 1, x)), max(0, min(n - 1, y))
 
 
+def tile_exists(service_url, level, row, col):
+    """Use ArcGIS blankTile=false semantics: a missing cached tile returns HTTP 404."""
+    url = f"{service_url.rstrip('/')}/tile/{level}/{row}/{col}?blankTile=false"
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "cchist-historic-imagery-coverage/1.0", "Accept": "image/*"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as response:
+            # We only need proof that a non-blank cached tile exists.
+            response.read(1)
+            return True, None
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False, None
+        return False, f"HTTP {exc.code}"
+    except Exception as exc:
+        return False, str(exc)
+
+
 def tile_coverage_grid(service_url, bbox=AOI, level=COVERAGE_ZOOM):
-    """Probe ArcGIS tilemap so broad service extents don't imply false coverage."""
     west, south, east, north = bbox
     left, top = lonlat_to_tile(west, north, level)
     right, bottom = lonlat_to_tile(east, south, level)
     width, height = right - left + 1, bottom - top + 1
     if width <= 0 or height <= 0:
         return None
-    values = [0] * (width * height)
-    got_response = False
-    base = service_url.rstrip("/")
-    for row0 in range(0, height, TILEMAP_CHUNK):
-        for col0 in range(0, width, TILEMAP_CHUNK):
-            cw = min(TILEMAP_CHUNK, width - col0)
-            ch = min(TILEMAP_CHUNK, height - row0)
-            url = f"{base}/tilemap/{level}/{top + row0}/{left + col0}/{cw}/{ch}"
-            payload = get_json(url, {"f": "json"}, timeout=20)
-            data = payload.get("data")
-            if not isinstance(data, list) or len(data) != cw * ch:
-                raise RuntimeError(f"unexpected tilemap response from {url}")
-            got_response = True
-            for rr in range(ch):
-                src = rr * cw
-                dst = (row0 + rr) * width + col0
-                for cc in range(cw):
-                    values[dst + cc] = 1 if data[src + cc] else 0
-    if not got_response:
+
+    coords = [(row, col) for row in range(top, bottom + 1) for col in range(left, right + 1)]
+    values = [0] * len(coords)
+    errors = []
+
+    def probe(index_coord):
+        index, (row, col) = index_coord
+        exists, error = tile_exists(service_url, level, row, col)
+        return index, exists, error
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=PROBE_WORKERS) as pool:
+        for index, exists, error in pool.map(probe, enumerate(coords)):
+            values[index] = 1 if exists else 0
+            if error and len(errors) < 8:
+                errors.append(error)
+
+    # If every request failed for a non-404 reason, coverage is unknown rather
+    # than genuinely empty, so return None and let the client label it unknown.
+    if errors and not any(values):
         return None
+
     return {
         "level": level,
         "left": left,
@@ -113,6 +135,7 @@ def tile_coverage_grid(service_url, bbox=AOI, level=COVERAGE_ZOOM):
         "height": height,
         "bits": "".join("1" if v else "0" for v in values),
         "availableTiles": sum(values),
+        "testedTiles": len(values),
         "aoi": bbox,
     }
 
@@ -132,8 +155,8 @@ def main():
             data = get_json(SEARCH, {"f": "json", "q": q, "num": 100, "start": 1})
             for item in data.get("results", []):
                 found[item.get("id")] = item
-        except Exception as e:
-            errors.append(f"{q}: {e}")
+        except Exception as exc:
+            errors.append(f"{q}: {exc}")
 
     entries = []
     for item_id, seed in found.items():
@@ -150,6 +173,7 @@ def main():
         year = year_from(item)
         if not year:
             continue
+
         url = item.get("url") or seed.get("url")
         service_type, tiled, service = None, False, {}
         if url:
@@ -160,19 +184,22 @@ def main():
                     service_type = "ImageServer"
                 elif url.rstrip("/").lower().endswith("/mapserver"):
                     service_type = "MapServer"
-            except Exception as e:
-                errors.append(f"{title}: {e}")
+            except Exception as exc:
+                errors.append(f"{title}: {exc}")
+
         bbox = bbox_from_extent(item.get("extent")) or bbox_from_extent(seed.get("extent"))
         coverage_source = "portal-item" if bbox else None
         if not bbox:
             bbox = bbox_from_extent(service.get("fullExtent")) or bbox_from_extent(service.get("extent"))
             coverage_source = "service-extent" if bbox else None
+
         grid = None
-        if url and tiled and service_type == "MapServer":
+        if url and tiled and service_type in ("MapServer", "ImageServer"):
             try:
                 grid = tile_coverage_grid(url)
-            except Exception as e:
-                errors.append(f"{title} tilemap: {e}")
+            except Exception as exc:
+                errors.append(f"{title} tile probe: {exc}")
+
         entries.append({
             "year": year,
             "title": title,
@@ -183,7 +210,7 @@ def main():
             "tiled": tiled,
             "tileUrl": (url.rstrip("/") + "/tile/{z}/{y}/{x}") if url and tiled else None,
             "bbox": bbox,
-            "coverageSource": "tilemap-grid" if grid else coverage_source,
+            "coverageSource": "tile-probe-grid" if grid else coverage_source,
             "coverageGrid": grid,
             "source": "NSW Spatial Services HAPE",
         })
@@ -203,18 +230,20 @@ def main():
         "updated": datetime.now(timezone.utc).isoformat(),
         "source": "NSW Spatial Services Historical Imagery / HAPE",
         "viewer": f"{PORTAL}/apps/webappviewer/index.html?id=f7c215b873864d44bccddda8075238cb",
-        "coverageModel": f"ArcGIS tile availability sampled across the Central Coast at Web Mercator zoom {COVERAGE_ZOOM}; bbox is fallback only",
+        "coverageModel": f"Actual ArcGIS cached tiles probed with blankTile=false across the Central Coast at Web Mercator zoom {COVERAGE_ZOOM}; bbox is fallback only",
         "coverageAoi": AOI,
         "epochs": epochs,
         "errors": errors[-40:],
     }
-    with open(args.out, "w", encoding="utf-8") as f:
-        json.dump(out, f, indent=2)
+    with open(args.out, "w", encoding="utf-8") as handle:
+        json.dump(out, handle, indent=2)
+
     print(json.dumps({
         "epochs": len(epochs),
         "withTileCoverage": sum(1 for x in epochs if x.get("coverageGrid")),
         "withAnyCentralCoastTiles": sum(1 for x in epochs if (x.get("coverageGrid") or {}).get("availableTiles", 0) > 0),
         "yearsWithCentralCoastTiles": [x["year"] for x in epochs if (x.get("coverageGrid") or {}).get("availableTiles", 0) > 0],
+        "yearsWithNoCentralCoastTiles": [x["year"] for x in epochs if x.get("coverageGrid") and (x.get("coverageGrid") or {}).get("availableTiles", 0) == 0],
     }, indent=2))
 
 
