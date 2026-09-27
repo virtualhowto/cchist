@@ -1,0 +1,35 @@
+name: Cancel stale refactor processing jobs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/cancel-stale-refactor-jobs.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Cancel obsolete processing runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -u
+          # Old Central-Coast LiDAR rebuild, superseded local-cache run, and pre-final terrain-change run.
+          for run in 36356591766 36356694031 36356670479; do
+            echo "Cancelling stale run $run"
+            code=$(curl -sS -o /tmp/cancel-$run.txt -w '%{http_code}' \
+              -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/repos/$REPO/actions/runs/$run/cancel" || true)
+            echo "HTTP $code"
+            cat /tmp/cancel-$run.txt || true
+          done
