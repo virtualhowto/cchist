@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const MIN_VIEW_OVERLAP = 0.10;
+  const MIN_VIEW_OVERLAP = 0.08;
   const sel = document.getElementById('historicImageryYear');
   if (!sel || typeof map === 'undefined') return;
 
@@ -14,9 +14,9 @@
   controls.innerHTML = `
     <label class="layerRow" style="margin-top:6px">
       <input type="checkbox" id="historicImageryShowAll">
-      <span class="layerText"><b>Show years outside this view</b><small>Off by default. Years without matching coverage are hidden.</small></span>
+      <span class="layerText"><b>Show years outside this view</b><small>Off by default. Years without matching imagery coverage are hidden.</small></span>
     </label>
-    <div id="imageryCoverageStatus" class="layerStatus">Checking imagery coverage for this map view…</div>`;
+    <div id="imageryCoverageStatus" class="layerStatus">Checking actual imagery coverage for this map view…</div>`;
   const status = group?.querySelector('#imageryStatus');
   if (group && status) status.insertAdjacentElement('afterend', controls);
   else group?.appendChild(controls);
@@ -48,20 +48,70 @@
     return validBBox(b) && lng >= b[0] && lng <= b[2] && lat >= b[1] && lat <= b[3];
   }
 
+  function lonLatToTile(lng, lat, z) {
+    const n = 2 ** z;
+    const clippedLat = Math.max(-85.05112878, Math.min(85.05112878, lat));
+    const x = Math.floor((lng + 180) / 360 * n);
+    const r = clippedLat * Math.PI / 180;
+    const y = Math.floor((1 - Math.asinh(Math.tan(r)) / Math.PI) / 2 * n);
+    return [Math.max(0, Math.min(n - 1, x)), Math.max(0, Math.min(n - 1, y))];
+  }
+
+  function gridAvailability(grid, vb) {
+    if (!grid || !Number.isInteger(grid.level) || !Number.isInteger(grid.left) || !Number.isInteger(grid.top) ||
+        !Number.isInteger(grid.width) || !Number.isInteger(grid.height) || typeof grid.bits !== 'string') return null;
+    if (grid.bits.length < grid.width * grid.height) return null;
+
+    const [left, top] = lonLatToTile(vb[0], vb[3], grid.level);
+    const [right, bottom] = lonLatToTile(vb[2], vb[1], grid.level);
+    const viewWidth = Math.max(1, right - left + 1);
+    const viewHeight = Math.max(1, bottom - top + 1);
+    const total = viewWidth * viewHeight;
+    let available = 0;
+
+    const x0 = Math.max(left, grid.left);
+    const x1 = Math.min(right, grid.left + grid.width - 1);
+    const y0 = Math.max(top, grid.top);
+    const y1 = Math.min(bottom, grid.top + grid.height - 1);
+    if (x0 <= x1 && y0 <= y1) {
+      for (let y = y0; y <= y1; y++) {
+        const gy = y - grid.top;
+        for (let x = x0; x <= x1; x++) {
+          const gx = x - grid.left;
+          if (grid.bits[gy * grid.width + gx] === '1') available++;
+        }
+      }
+    }
+
+    const center = map.getCenter();
+    const [cx, cy] = lonLatToTile(center.lng, center.lat, grid.level);
+    const cgx = cx - grid.left, cgy = cy - grid.top;
+    const centerAvailable = cgx >= 0 && cgy >= 0 && cgx < grid.width && cgy < grid.height &&
+      grid.bits[cgy * grid.width + cgx] === '1';
+    const ratio = available / total;
+    return { available: centerAvailable || ratio >= MIN_VIEW_OVERLAP, unknown: false, ratio, source: 'tilemap' };
+  }
+
   function availability(epoch, vb) {
-    if (!validBBox(epoch.bbox)) return { available: false, unknown: true, ratio: 0 };
+    const gridState = gridAvailability(epoch.coverageGrid, vb);
+    if (gridState) return gridState;
+    if (!validBBox(epoch.bbox)) return { available: false, unknown: true, ratio: 0, source: 'unknown' };
     const center = map.getCenter();
     const ratio = intersectionRatio(vb, epoch.bbox);
     const available = containsPoint(epoch.bbox, center.lat, center.lng) || ratio >= MIN_VIEW_OVERLAP;
-    return { available, unknown: false, ratio };
+    return { available, unknown: false, ratio, source: 'bbox' };
+  }
+
+  function escapeHtml(s) {
+    return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
   }
 
   function optionLabel(epoch, state) {
     const title = epoch.title || 'NSW historical imagery';
     let suffix = '';
     if (showAll && state.unknown) suffix = ' — coverage unknown';
-    else if (showAll && !state.available) suffix = ' — outside view';
-    else if (state.available && state.ratio > 0 && state.ratio < 0.98) suffix = ' — partial';
+    else if (showAll && !state.available) suffix = ' — no imagery here';
+    else if (state.available && state.ratio > 0 && state.ratio < 0.92) suffix = ' — partial';
     return `${epoch.year} — ${title}${suffix}`;
   }
 
@@ -75,7 +125,7 @@
     sel.innerHTML = '<option value="">None</option>' + visible
       .slice()
       .sort((a, b) => Number(b.epoch.year) - Number(a.epoch.year))
-      .map(({ epoch, state }) => `<option value="${String(epoch.year).replace(/"/g, '&quot;')}">${optionLabel(epoch, state).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</option>`)
+      .map(({ epoch, state }) => `<option value="${escapeHtml(epoch.year)}">${escapeHtml(optionLabel(epoch, state))}</option>`)
       .join('');
     sel.disabled = !visible.length;
 
@@ -89,13 +139,14 @@
     }
 
     const availableCount = states.filter(x => x.state.available).length;
-    const partialCount = states.filter(x => x.state.available && x.state.ratio > 0 && x.state.ratio < 0.98).length;
+    const exactCount = states.filter(x => x.state.source === 'tilemap').length;
+    const partialCount = states.filter(x => x.state.available && x.state.ratio > 0 && x.state.ratio < 0.92).length;
     const unknownCount = states.filter(x => x.state.unknown).length;
     if (coverageStatus) {
       coverageStatus.className = availableCount ? 'layerStatus ready' : 'layerStatus warn';
       coverageStatus.textContent = showAll
-        ? `${availableCount} of ${states.length} years cover this view${unknownCount ? ` • ${unknownCount} unknown` : ''}`
-        : `${availableCount} imagery year${availableCount === 1 ? '' : 's'} available for this view${partialCount ? ` • ${partialCount} partial` : ''}`;
+        ? `${availableCount} of ${states.length} years have imagery here • ${exactCount} checked from actual tile coverage${unknownCount ? ` • ${unknownCount} unknown` : ''}`
+        : `${availableCount} imagery year${availableCount === 1 ? '' : 's'} available here${partialCount ? ` • ${partialCount} partial` : ''}`;
     }
   }
 
@@ -117,6 +168,10 @@
       const data = await r.json();
       catalogue = (data.epochs || []).filter(x => x.tileUrl);
       applyFilter();
+      // Core map loading is asynchronous too; repeat after it has definitely
+      // populated its original all-years selector so our filtered list wins.
+      setTimeout(applyFilter, 1000);
+      setTimeout(applyFilter, 3000);
     } catch (err) {
       if (coverageStatus) {
         coverageStatus.className = 'layerStatus warn';
@@ -126,7 +181,5 @@
     }
   }
 
-  // The core map also loads the catalogue. A short delay lets its normal layer
-  // setup finish first, then this module narrows the year list by coverage.
   setTimeout(loadCatalogue, 250);
 })();
