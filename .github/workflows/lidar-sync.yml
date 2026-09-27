@@ -35,6 +35,7 @@ jobs:
     timeout-minutes: 720
     env:
       LIDAR_ROOT: /mnt/usb/stack/cchist/lidar
+      PERMISSIONS_ONLY: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'Permissions-only') }}
 
     steps:
       - name: Checkout
@@ -52,6 +53,7 @@ jobs:
           mkdir -p "$LIDAR_ROOT/web"
 
       - name: Resolve manifest
+        if: env.PERMISSIONS_ONLY != 'true'
         id: manifest
         shell: bash
         run: |
@@ -80,6 +82,7 @@ jobs:
           echo "path=$RUNNER_TEMP/lidar-downloads.txt" >> "$GITHUB_OUTPUT"
 
       - name: Preview manifest
+        if: env.PERMISSIONS_ONLY != 'true'
         run: |
           set -euo pipefail
           manifest='${{ steps.manifest.outputs.path }}'
@@ -87,6 +90,7 @@ jobs:
           sed -n '1,30p' "$manifest"
 
       - name: Download and build latest LiDAR layers
+        if: env.PERMISSIONS_ONLY != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -96,7 +100,7 @@ jobs:
           bash scripts/lidar-sync.sh '${{ steps.manifest.outputs.path }}' "$process"
 
       - name: Build dated LiDAR hillshade epochs
-        if: success() && (inputs.process == true || inputs.process == '')
+        if: env.PERMISSIONS_ONLY != 'true' && success() && (inputs.process == true || inputs.process == '')
         shell: bash
         run: |
           set -euo pipefail
@@ -104,7 +108,7 @@ jobs:
           bash scripts/build-lidar-epochs.sh
 
       - name: Refresh NSW historic imagery catalogue
-        if: always()
+        if: env.PERMISSIONS_ONLY != 'true' && always()
         shell: bash
         run: |
           set -euo pipefail
@@ -113,7 +117,6 @@ jobs:
             echo 'Historic imagery catalogue refresh failed; retaining any previous catalogue.'
             exit 0
           }
-          chmod 644 "$LIDAR_ROOT/web/imagery.json"
           cat "$LIDAR_ROOT/web/imagery.json" | head -80
 
       - name: Publish web permissions
@@ -121,15 +124,17 @@ jobs:
         run: |
           set -euo pipefail
           root="$LIDAR_ROOT/web"
-          chmod 755 "$root"
-          find "$root" -type d -exec chmod a+rX {} +
-          find "$root" -maxdepth 1 -type f -exec chmod 644 {} +
+          docker run --rm -v "$root:/data" nginx:1.27-alpine sh -lc '
+            chmod 755 /data
+            [ ! -e /data/status.json ] || chmod 644 /data/status.json
+            [ ! -e /data/imagery.json ] || chmod 644 /data/imagery.json
+          '
           for f in status.json imagery.json; do
             test ! -e "$root/$f" || stat -c "$f: %a %U:%G %s bytes" "$root/$f"
           done
 
       - name: Show storage summary
-        if: always()
+        if: always() && env.PERMISSIONS_ONLY != 'true'
         run: |
           echo "### LiDAR storage" >> "$GITHUB_STEP_SUMMARY"
           du -sh "$LIDAR_ROOT/raw" 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
