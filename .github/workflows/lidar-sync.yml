@@ -35,24 +35,28 @@ on:
   push:
     branches: [main]
     paths:
-      - data/lidar-downloads.txt
-      - scripts/lidar-sync.sh
-      - scripts/select-lidar-epochs.py
-      - scripts/build-lidar-epochs.sh
-      - scripts/elvis-discover.py
-      - scripts/elvis-frontend-probe.sh
-      - scripts/elvis-backend-probe.sh
       - .github/workflows/lidar-sync.yml
 
 concurrency:
-  group: cchist-lidar-local-cache
+  group: cchist-lidar
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  supersede-stale-builds:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Keep code pushes lightweight
+        run: |
+          echo 'High-resolution LiDAR processing is manual-only.'
+          echo 'This lightweight run supersedes any stale pre-refactor LiDAR build using the same concurrency group.'
+
   sync:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 720
     env:
@@ -76,10 +80,6 @@ jobs:
         run: |
           set -euo pipefail
           west='${{ inputs.west }}'; south='${{ inputs.south }}'; east='${{ inputs.east }}'; north='${{ inputs.north }}'
-          [ -n "$west" ] || west='150.95'
-          [ -n "$south" ] || south='-33.62'
-          [ -n "$east" ] || east='151.65'
-          [ -n "$north" ] || north='-33.10'
           python3 - "$west" "$south" "$east" "$north" <<'PY'
           import sys
           w,s,e,n=map(float,sys.argv[1:])
@@ -104,7 +104,7 @@ jobs:
             exit 0
           fi
           if grep -Ev '^[[:space:]]*(#|$)' data/lidar-downloads.txt | grep -qE '^(dem|laz)\|https?://'; then
-            echo 'Using curated repository manifest. Note: the local AOI crop still controls published terrain coverage.'
+            echo 'Using curated repository manifest; the requested AOI controls published terrain coverage.'
             echo 'path=data/lidar-downloads.txt' >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -130,11 +130,10 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x scripts/lidar-sync.sh
-          process='${{ inputs.process }}'; [ -n "$process" ] || process=true
-          bash scripts/lidar-sync.sh '${{ steps.manifest.outputs.path }}' "$process"
+          bash scripts/lidar-sync.sh '${{ steps.manifest.outputs.path }}' '${{ inputs.process }}'
 
       - name: Build dated local LiDAR hillshade epochs
-        if: success() && (inputs.process == true || inputs.process == '')
+        if: success() && inputs.process == true
         shell: bash
         run: |
           set -euo pipefail
