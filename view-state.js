@@ -9,8 +9,6 @@
 
   const num = (name, fallback, min, max) => {
     const raw = params.get(name);
-    // URLSearchParams#get returns null for an absent value. Number(null) is 0,
-    // which previously made a URL without lat/lng restore the map at 0,0.
     if (raw === null || String(raw).trim() === '') return fallback;
     const value = Number(raw);
     return Number.isFinite(value) && value >= min && value <= max ? value : fallback;
@@ -26,14 +24,12 @@
     layers: (params.get('layers') || '').split(',').filter(Boolean),
     lidarOpacity: Math.round(num('lop', 70, 10, 100)),
     imageryOpacity: Math.round(num('iop', 100, 10, 100)),
+    change: params.get('change') || '',
+    changeOpacity: Math.round(num('cop', 80, 10, 100)),
     markers: params.get('markers') !== '0',
     researchYear: Math.round(num('research', 1950, 1820, 2100))
   };
 
-  // cchist is a Central Coast research map. Old URLs produced by the null→0
-  // bug should heal themselves instead of reopening on the equator. Keep this
-  // deliberately broader than the LiDAR AOI so nearby regional exploration is
-  // still possible.
   const isCentralCoastRegion = (lat, lng) =>
     Number.isFinite(lat) && Number.isFinite(lng) &&
     lat >= -34.5 && lat <= -32.5 && lng >= 150.0 && lng <= 152.5;
@@ -67,6 +63,7 @@
 
     setInput('overlayOpacity', desired.lidarOpacity);
     setInput('imageryOpacity', desired.imageryOpacity);
+    setInput('terrainChangeOpacity', desired.changeOpacity);
 
     const markerToggle = document.getElementById('markersToggle');
     if (markerToggle) {
@@ -129,6 +126,11 @@
       selectWhenAvailable('historicImageryYear', desired.imagery, 'imagery');
     }
 
+    if (desired.change) {
+      pending.add('change');
+      selectWhenAvailable('terrainChangePair', desired.change, 'change');
+    }
+
     if (desired.layers.length) {
       pending.add('layers');
       layersWhenAvailable();
@@ -171,6 +173,13 @@
 
     out.set('lop', document.getElementById('overlayOpacity')?.value || '70');
     out.set('iop', document.getElementById('imageryOpacity')?.value || '100');
+
+    const change = document.getElementById('terrainChangePair')?.value || '';
+    if (change) {
+      out.set('change', change);
+      out.set('cop', document.getElementById('terrainChangeOpacity')?.value || '80');
+    }
+
     if (!document.getElementById('markersToggle')?.checked) out.set('markers', '0');
     out.set('research', document.getElementById('yr')?.value || '1950');
 
@@ -197,8 +206,8 @@
   function addListeners() {
     map.on('moveend', queueUrlUpdate);
     document.querySelectorAll('input[name="base"],.lidarCheck,#markersToggle,#compareEnabled').forEach(el => el.addEventListener('change', queueUrlUpdate));
-    ['lidarEpoch', 'historicImageryYear', 'compareLeft', 'compareRight'].forEach(id => document.getElementById(id)?.addEventListener('change', queueUrlUpdate));
-    ['overlayOpacity', 'imageryOpacity', 'yr', 'compareSplit'].forEach(id => document.getElementById(id)?.addEventListener('input', queueUrlUpdate));
+    ['lidarEpoch', 'historicImageryYear', 'terrainChangePair', 'compareLeft', 'compareRight'].forEach(id => document.getElementById(id)?.addEventListener('change', queueUrlUpdate));
+    ['overlayOpacity', 'imageryOpacity', 'terrainChangeOpacity', 'yr', 'compareSplit'].forEach(id => document.getElementById(id)?.addEventListener('input', queueUrlUpdate));
   }
 
   function addShareControl() {
@@ -206,7 +215,7 @@
     if (!panel || document.getElementById('copyViewLink')) return;
     const group = document.createElement('div');
     group.className = 'layerGroup';
-    group.innerHTML = '<h3>Share research view</h3><button id="copyViewLink" type="button" style="width:100%;min-height:42px;border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:9px;cursor:pointer">Copy view link</button><div id="copyViewStatus" class="layerStatus">URL tracks map position, dated layers and swipe comparison.</div>';
+    group.innerHTML = '<h3>Share research view</h3><button id="copyViewLink" type="button" style="width:100%;min-height:42px;border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:9px;cursor:pointer">Copy view link</button><div id="copyViewStatus" class="layerStatus">URL tracks map position, dated layers, terrain change and swipe comparison.</div>';
     panel.appendChild(group);
     document.getElementById('copyViewLink').addEventListener('click', async () => {
       updateUrl();
@@ -234,6 +243,7 @@
     }
     if (pending.has('lidar')) selectWhenAvailable('lidarEpoch', desired.lidar, 'lidar');
     if (pending.has('imagery')) selectWhenAvailable('historicImageryYear', desired.imagery, 'imagery');
+    if (pending.has('change')) selectWhenAvailable('terrainChangePair', desired.change, 'change');
     if (pending.has('layers')) layersWhenAvailable();
     if (!pending.size) {
       clearInterval(poll);
