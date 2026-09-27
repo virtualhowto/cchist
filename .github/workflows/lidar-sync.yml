@@ -17,13 +17,14 @@ on:
     paths:
       - data/lidar-downloads.txt
       - scripts/lidar-sync.sh
+      - scripts/select-lidar-epochs.py
+      - scripts/build-lidar-epochs.sh
+      - scripts/nsw-historic-imagery-discover.py
       - scripts/elvis-discover.py
       - scripts/elvis-frontend-probe.sh
       - scripts/elvis-backend-probe.sh
       - .github/workflows/lidar-sync.yml
 
-# Only the newest dataset definition matters. Superseded discovery/download runs
-# are cancelled so a stale queued job cannot block the repo's single NUC runner.
 concurrency:
   group: cchist-lidar
   cancel-in-progress: true
@@ -48,7 +49,7 @@ jobs:
           df -hT / /mnt/usb 2>&1 || true
           echo '=== /mnt/usb mount ==='
           findmnt -T /mnt/usb
-          mkdir -p "$LIDAR_ROOT"
+          mkdir -p "$LIDAR_ROOT/web"
 
       - name: Resolve manifest
         id: manifest
@@ -85,14 +86,34 @@ jobs:
           echo "Manifest entries: $(grep -Ev '^[[:space:]]*(#|$)' "$manifest" | wc -l)"
           sed -n '1,30p' "$manifest"
 
-      - name: Download and build LiDAR layers
+      - name: Download and build latest LiDAR layers
         shell: bash
         run: |
           set -euo pipefail
           chmod +x scripts/lidar-sync.sh
           process='${{ inputs.process }}'
           if [ -z "$process" ]; then process=true; fi
-          scripts/lidar-sync.sh '${{ steps.manifest.outputs.path }}' "$process"
+          bash scripts/lidar-sync.sh '${{ steps.manifest.outputs.path }}' "$process"
+
+      - name: Build dated LiDAR hillshade epochs
+        if: success() && (inputs.process == true || inputs.process == '')
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/build-lidar-epochs.sh scripts/select-lidar-epochs.py
+          bash scripts/build-lidar-epochs.sh
+
+      - name: Refresh NSW historic imagery catalogue
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/nsw-historic-imagery-discover.py
+          python3 scripts/nsw-historic-imagery-discover.py --out "$LIDAR_ROOT/web/imagery.json" || {
+            echo 'Historic imagery catalogue refresh failed; retaining any previous catalogue.'
+            exit 0
+          }
+          cat "$LIDAR_ROOT/web/imagery.json" | head -80
 
       - name: Show storage summary
         if: always()
