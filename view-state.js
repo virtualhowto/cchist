@@ -183,6 +183,19 @@
     if (!document.getElementById('markersToggle')?.checked) out.set('markers', '0');
     out.set('research', document.getElementById('yr')?.value || '1950');
 
+    const researchState = typeof window.cchistResearchState === 'function' ? window.cchistResearchState() : null;
+    if (researchState) {
+      out.set('rscope', researchState.scope || 'view');
+      if (researchState.scope === 'centre' || researchState.scope === 'point') {
+        out.set('rr', String(researchState.radiusKm || 5));
+      }
+      if (researchState.scope === 'point' && researchState.point) {
+        out.set('rlat', Number(researchState.point.lat).toFixed(6));
+        out.set('rlng', Number(researchState.point.lng).toFixed(6));
+      }
+      if (researchState.topic) out.set('rtopic', researchState.topic);
+    }
+
     const compareEnabled = document.getElementById('compareEnabled');
     if (compareEnabled?.checked) {
       out.set('compare', 'swipe');
@@ -208,6 +221,7 @@
     document.querySelectorAll('input[name="base"],.lidarCheck,#markersToggle,#compareEnabled').forEach(el => el.addEventListener('change', queueUrlUpdate));
     ['lidarEpoch', 'historicImageryYear', 'terrainChangePair', 'compareLeft', 'compareRight'].forEach(id => document.getElementById(id)?.addEventListener('change', queueUrlUpdate));
     ['overlayOpacity', 'imageryOpacity', 'terrainChangeOpacity', 'yr', 'compareSplit'].forEach(id => document.getElementById(id)?.addEventListener('input', queueUrlUpdate));
+    document.addEventListener('researchscopechange', queueUrlUpdate);
   }
 
   function addShareControl() {
@@ -215,7 +229,7 @@
     if (!panel || document.getElementById('copyViewLink')) return;
     const group = document.createElement('div');
     group.className = 'layerGroup';
-    group.innerHTML = '<h3>Share research view</h3><button id="copyViewLink" type="button" style="width:100%;min-height:42px;border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:9px;cursor:pointer">Copy view link</button><div id="copyViewStatus" class="layerStatus">URL tracks map position, dated layers, terrain change and swipe comparison.</div>';
+    group.innerHTML = '<h3>Share research view</h3><button id="copyViewLink" type="button" style="width:100%;min-height:42px;border:1px solid var(--line);background:var(--panel2);color:var(--text);border-radius:9px;cursor:pointer">Copy view link</button><div id="copyViewStatus" class="layerStatus">URL tracks map position, research scope, dated layers, terrain change and swipe comparison.</div>';
     panel.appendChild(group);
     document.getElementById('copyViewLink').addEventListener('click', async () => {
       updateUrl();
