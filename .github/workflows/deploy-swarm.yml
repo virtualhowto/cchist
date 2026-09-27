@@ -9,6 +9,7 @@ on:
       - index.html
       - compare.js
       - compare-fix.js
+      - terrain-change.js
       - view-state.js
       - layout.js
       - docker-stack.yml
@@ -52,8 +53,9 @@ jobs:
             chmod 755 /data
             [ ! -e /data/status.json ] || chmod 644 /data/status.json
             [ ! -e /data/imagery.json ] || chmod 644 /data/imagery.json
+            [ ! -e /data/change.json ] || chmod 644 /data/change.json
           '
-          for f in status.json imagery.json; do
+          for f in status.json imagery.json change.json; do
             if [ -e "$root/$f" ]; then
               echo "$f: $(stat -c '%a %U:%G %s bytes' "$root/$f")"
             fi
@@ -84,6 +86,7 @@ jobs:
               docker exec "$name" wget -qO- http://127.0.0.1/data/places.json >/dev/null
               docker exec "$name" wget -qO- http://127.0.0.1/compare.js >/dev/null
               docker exec "$name" wget -qO- http://127.0.0.1/compare-fix.js >/dev/null
+              docker exec "$name" wget -qO- http://127.0.0.1/terrain-change.js >/dev/null
               docker exec "$name" wget -qO- http://127.0.0.1/view-state.js >/dev/null
               docker exec "$name" wget -qO- http://127.0.0.1/layout.js >/dev/null
               exit 0
@@ -126,6 +129,9 @@ jobs:
           docker exec "$cid" sh -lc 'ls -l /usr/share/nginx/html/lidar/status.json /usr/share/nginx/html/lidar/imagery.json'
           docker exec "$cid" wget -qO- http://127.0.0.1/lidar/status.json >/dev/null
           docker exec "$cid" wget -qO- http://127.0.0.1/lidar/imagery.json >/dev/null
+          if docker exec "$cid" test -f /usr/share/nginx/html/lidar/change.json; then
+            docker exec "$cid" wget -qO- http://127.0.0.1/lidar/change.json >/dev/null
+          fi
 
       - name: Verify HTTPS endpoint
         run: |
