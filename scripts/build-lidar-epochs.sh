@@ -29,15 +29,15 @@ PY
 for year in $years; do
   list="$ROOT/working/dem-epochs/$year.txt"
   [[ -s "$list" ]] || continue
-  sig="$(sha256sum "$list" | awk '{print $1}')"
+  sig="$( { cat "$list"; printf '\nAOI=%s,%s,%s,%s\n' "$AOI_XMIN" "$AOI_YMIN" "$AOI_XMAX" "$AOI_YMAX"; } | sha256sum | awk '{print $1}')"
   out="$ROOT/web/epochs/$year/hillshade"
   marker="$ROOT/web/epochs/$year/.source-signature"
   if [[ -f "$marker" ]] && [[ "$(cat "$marker")" == "$sig" ]] && find "$out" -type f -name '*.png' -print -quit 2>/dev/null | grep -q .; then
-    echo "LiDAR epoch $year already built; skipping"
+    echo "LiDAR epoch $year already built for AOI $AOI_XMIN,$AOI_YMIN,$AOI_XMAX,$AOI_YMAX; skipping"
     continue
   fi
 
-  echo "Building LiDAR hillshade epoch $year"
+  echo "Building LiDAR hillshade epoch $year for AOI $AOI_XMIN,$AOI_YMIN,$AOI_XMAX,$AOI_YMAX"
   mkdir -p "$ROOT/derived/epochs/$year" "$out"
   rm -rf "$out"/*
 
