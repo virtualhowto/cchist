@@ -1,0 +1,63 @@
+name: Build Central Coast Terrain Change
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - scripts/build-terrain-change.sh
+      - .github/workflows/terrain-change.yml
+
+concurrency:
+  group: cchist-terrain-change
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 360
+    env:
+      LIDAR_ROOT: /mnt/usb/stack/cchist/lidar
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify runner and epoch inputs
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "NUC8i7HNK"
+          docker info >/dev/null
+          for y in 2011 2014 2020; do
+            test -s "$LIDAR_ROOT/working/dem-epochs/$y.txt" || {
+              echo "Missing DEM epoch list for $y" >&2
+              exit 1
+            }
+          done
+          df -h "$LIDAR_ROOT"
+
+      - name: Build terrain-change layers
+        run: |
+          set -euo pipefail
+          chmod +x scripts/build-terrain-change.sh
+          bash scripts/build-terrain-change.sh
+
+      - name: Verify published catalogue
+        run: |
+          set -euo pipefail
+          test -s "$LIDAR_ROOT/web/change.json"
+          cat "$LIDAR_ROOT/web/change.json"
+          find "$LIDAR_ROOT/web/change" -type f -name '*.png' -print -quit | grep -q .
+
+      - name: Refresh cchist
+        run: |
+          if docker service inspect cchist_cchist >/dev/null 2>&1; then
+            docker service update --force cchist_cchist >/dev/null
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo '### Terrain change' >> "$GITHUB_STEP_SUMMARY"
+          test -f "$LIDAR_ROOT/web/change.json" && cat "$LIDAR_ROOT/web/change.json" >> "$GITHUB_STEP_SUMMARY" || true
+          du -sh "$LIDAR_ROOT/derived/change" "$LIDAR_ROOT/web/change" 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
