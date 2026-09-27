@@ -1,4 +1,4 @@
-name: Build Central Coast Terrain Change
+name: Build Local Terrain Change
 
 on:
   workflow_dispatch:
@@ -23,17 +23,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Verify runner and epoch inputs
+      - name: Verify runner and local epoch inputs
         run: |
           set -euo pipefail
           test "$(hostname)" = "NUC8i7HNK"
           docker info >/dev/null
-          for y in 2011 2014 2020; do
-            test -s "$LIDAR_ROOT/working/dem-epochs/$y.txt" || {
-              echo "Missing DEM epoch list for $y" >&2
-              exit 1
-            }
-          done
+          mapfile -t years < <(find "$LIDAR_ROOT/derived/epochs" -mindepth 2 -maxdepth 2 -type f -name dem-3857.tif -printf '%h\n' 2>/dev/null | awk -F/ '{print $NF}' | grep -E '^[0-9]{4}$' | sort -nu)
+          echo "Local epoch DEM years: ${years[*]-none}"
+          if (( ${#years[@]} < 2 )); then
+            echo 'At least two locally built LiDAR epoch DEMs are required.' >&2
+            exit 1
+          fi
+          test -s "$LIDAR_ROOT/web/status.json"
+          cat "$LIDAR_ROOT/web/status.json"
           df -h "$LIDAR_ROOT"
 
       - name: Build terrain-change layers
@@ -47,9 +49,15 @@ jobs:
           set -euo pipefail
           test -s "$LIDAR_ROOT/web/change.json"
           cat "$LIDAR_ROOT/web/change.json"
-          find "$LIDAR_ROOT/web/change" -type f -name '*.png' -print -quit | grep -q .
+          python3 - "$LIDAR_ROOT/web/change.json" <<'PY'
+          import json,sys
+          d=json.load(open(sys.argv[1]))
+          if d.get('ready') and not d.get('pairs'): raise SystemExit('ready catalogue has no pairs')
+          print('Pairs:', ', '.join((d.get('pairs') or {}).keys()) or 'none')
+          print('AOI:', d.get('aoi'))
+          PY
 
-      - name: Refresh cchist
+      - name: Refresh map service
         run: |
           if docker service inspect cchist_cchist >/dev/null 2>&1; then
             docker service update --force cchist_cchist >/dev/null
@@ -58,6 +66,6 @@ jobs:
       - name: Summary
         if: always()
         run: |
-          echo '### Terrain change' >> "$GITHUB_STEP_SUMMARY"
+          echo '### Local terrain change' >> "$GITHUB_STEP_SUMMARY"
           test -f "$LIDAR_ROOT/web/change.json" && cat "$LIDAR_ROOT/web/change.json" >> "$GITHUB_STEP_SUMMARY" || true
           du -sh "$LIDAR_ROOT/derived/change" "$LIDAR_ROOT/web/change" 2>/dev/null | tee -a "$GITHUB_STEP_SUMMARY" || true
