@@ -10,6 +10,8 @@ on:
       - compare.js
       - compare-fix.js
       - terrain-change.js
+      - imagery-filter.js
+      - research-scope.js
       - view-state.js
       - layout.js
       - docker-stack.yml
@@ -87,6 +89,8 @@ jobs:
               docker exec "$name" wget -qO- http://127.0.0.1/compare.js >/dev/null
               docker exec "$name" wget -qO- http://127.0.0.1/compare-fix.js >/dev/null
               docker exec "$name" wget -qO- http://127.0.0.1/terrain-change.js >/dev/null
+              docker exec "$name" wget -qO- http://127.0.0.1/imagery-filter.js >/dev/null
+              docker exec "$name" wget -qO- http://127.0.0.1/research-scope.js >/dev/null
               docker exec "$name" wget -qO- http://127.0.0.1/view-state.js >/dev/null
               docker exec "$name" wget -qO- http://127.0.0.1/layout.js >/dev/null
               exit 0
