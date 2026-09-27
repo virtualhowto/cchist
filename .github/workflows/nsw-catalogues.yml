@@ -1,0 +1,103 @@
+name: Refresh NSW Research Catalogues
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_imagery_tile_probe:
+        description: Refresh historical imagery metadata without probing statewide cached-tile availability
+        required: true
+        default: false
+        type: boolean
+  schedule:
+    - cron: '23 3 * * 0'
+  push:
+    branches: [main]
+    paths:
+      - scripts/nsw-historic-imagery-statewide.py
+      - scripts/nsw-elevation-index.py
+      - .github/workflows/nsw-catalogues.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cchist-nsw-catalogues
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 120
+    env:
+      LIDAR_ROOT: /mnt/usb/stack/cchist/lidar
+      NSW_IMAGERY_COVERAGE_ZOOM: '10'
+      NSW_IMAGERY_PROBE_WORKERS: '32'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify runner and storage
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "NUC8i7HNK"
+          docker info >/dev/null
+          mkdir -p "$LIDAR_ROOT/web"
+          df -h "$LIDAR_ROOT"
+
+      - name: Build NSW elevation survey index
+        run: |
+          set -euo pipefail
+          chmod +x scripts/nsw-elevation-index.py
+          python3 scripts/nsw-elevation-index.py --out "$LIDAR_ROOT/web/elevation-index.json"
+          python3 - "$LIDAR_ROOT/web/elevation-index.json" <<'PY'
+          import json,sys
+          x=json.load(open(sys.argv[1]))
+          print('NSW elevation surveys:', x.get('featureCount',0))
+          print('Year range:', (x.get('years') or [None])[0], 'to', (x.get('years') or [None])[-1])
+          PY
+
+      - name: Build NSW historical imagery catalogue
+        run: |
+          set -euo pipefail
+          chmod +x scripts/nsw-historic-imagery-statewide.py
+          extra=''
+          if [ '${{ github.event_name }}' = 'workflow_dispatch' ] && [ '${{ inputs.skip_imagery_tile_probe }}' = 'true' ]; then
+            extra='--skip-tile-probe'
+          fi
+          python3 scripts/nsw-historic-imagery-statewide.py --out "$LIDAR_ROOT/web/imagery.json" $extra
+
+      - name: Publish catalogue permissions
+        if: always()
+        run: |
+          set -euo pipefail
+          root="$LIDAR_ROOT/web"
+          docker run --rm -v "$root:/data" nginx:1.27-alpine sh -lc '
+            chmod 755 /data
+            for f in status.json imagery.json elevation-index.json change.json; do
+              [ ! -e "/data/$f" ] || chmod 644 "/data/$f"
+            done
+          '
+          for f in imagery.json elevation-index.json; do
+            test -f "$root/$f"
+            stat -c "$f: %a %U:%G %s bytes" "$root/$f"
+          done
+
+      - name: Refresh running map service
+        if: success()
+        run: |
+          if docker service inspect cchist_cchist >/dev/null 2>&1; then
+            docker service update --force cchist_cchist >/dev/null
+          fi
+
+      - name: Summary
+        if: always()
+        run: |
+          echo '### NSW research catalogues' >> "$GITHUB_STEP_SUMMARY"
+          for f in elevation-index.json imagery.json; do
+            if [ -f "$LIDAR_ROOT/web/$f" ]; then
+              echo "- $f: $(stat -c '%s bytes' "$LIDAR_ROOT/web/$f")" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "- $f: missing" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
