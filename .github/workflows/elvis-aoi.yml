@@ -1,0 +1,128 @@
+name: Request ELVIS Data by NSW AOI
+
+on:
+  workflow_dispatch:
+    inputs:
+      west:
+        description: Western longitude
+        required: true
+        default: '140.8'
+        type: string
+      south:
+        description: Southern latitude
+        required: true
+        default: '-37.7'
+        type: string
+      east:
+        description: Eastern longitude
+        required: true
+        default: '159.4'
+        type: string
+      north:
+        description: Northern latitude
+        required: true
+        default: '-28.0'
+        type: string
+      aoi_name:
+        description: Friendly name for the order AOI
+        required: true
+        default: 'NSW research AOI'
+        type: string
+      include_point_cloud:
+        description: Include classified point-cloud / LAZ products (can be extremely large for broad AOIs)
+        required: true
+        default: false
+        type: boolean
+      submit_order:
+        description: Actually submit the ELVIS order. Leave false to inspect the current order UI only.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cchist-elvis-aoi-order
+  cancel-in-progress: false
+
+jobs:
+  request:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ELVIS_EMAIL: ${{ secrets.ELVIS_EMAIL }}
+      ELVIS_INDUSTRY: ${{ vars.ELVIS_INDUSTRY }}
+      ELVIS_WEST: ${{ inputs.west }}
+      ELVIS_SOUTH: ${{ inputs.south }}
+      ELVIS_EAST: ${{ inputs.east }}
+      ELVIS_NORTH: ${{ inputs.north }}
+      ELVIS_AOI_NAME: ${{ inputs.aoi_name }}
+      ELVIS_INCLUDE_POINT_CLOUD: ${{ inputs.include_point_cloud }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate request
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          w,s,e,n=[float(os.environ[k]) for k in ('ELVIS_WEST','ELVIS_SOUTH','ELVIS_EAST','ELVIS_NORTH')]
+          if not (w<e and s<n): raise SystemExit('Invalid AOI bounds')
+          if w < 140 or e > 160 or s < -39 or n > -27: raise SystemExit('AOI is outside the expected NSW envelope')
+          area_hint=(e-w)*(n-s)
+          print(f'AOI: {w},{s},{e},{n}; angular area={area_hint:.2f} deg²')
+          if area_hint > 20:
+              print('WARNING: broad AOI. 1 m DEM delivery may be very large; classified point cloud can be multi-terabyte statewide.')
+          PY
+          if [ '${{ inputs.submit_order }}' = 'true' ] && [ -z "${ELVIS_EMAIL:-}" ]; then
+            echo 'ELVIS_EMAIL repository secret is required to submit an order.'
+            exit 2
+          fi
+
+      - name: Inspect or submit ELVIS AOI order
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/elvis-aoi"
+          mode=''
+          if [ '${{ inputs.submit_order }}' = 'true' ]; then mode='--order'; fi
+          docker run --rm \
+            -e ELVIS_EMAIL \
+            -e ELVIS_INDUSTRY="${ELVIS_INDUSTRY:-Other}" \
+            -e ELVIS_WEST -e ELVIS_SOUTH -e ELVIS_EAST -e ELVIS_NORTH \
+            -e ELVIS_AOI_NAME -e ELVIS_INCLUDE_POINT_CLOUD \
+            -e ELVIS_OUT=/out \
+            -v "$GITHUB_WORKSPACE:/work:ro" \
+            -v "$RUNNER_TEMP/elvis-aoi:/out" \
+            mcr.microsoft.com/playwright:v1.55.0-noble \
+            bash -lc "
+              set -euo pipefail
+              mkdir -p /tmp/elvis-run && cd /tmp/elvis-run
+              npm init -y >/dev/null 2>&1
+              npm install --no-audit --no-fund --silent playwright@1.55.0
+              cp /work/scripts/elvis-browser-aoi.mjs ./elvis-browser-aoi.mjs
+              node ./elvis-browser-aoi.mjs $mode
+            "
+
+      - name: Upload request diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: elvis-aoi-${{ github.run_id }}
+          path: ${{ runner.temp }}/elvis-aoi/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Summary
+        if: always()
+        run: |
+          echo '### ELVIS NSW AOI request' >> "$GITHUB_STEP_SUMMARY"
+          echo "- AOI: $ELVIS_WEST,$ELVIS_SOUTH,$ELVIS_EAST,$ELVIS_NORTH" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Include point cloud: $ELVIS_INCLUDE_POINT_CLOUD" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Submitted: ${{ inputs.submit_order }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ '${{ inputs.include_point_cloud }}' = 'true' ]; then
+            echo '- Warning: point-cloud orders can be extremely large for broad AOIs.' >> "$GITHUB_STEP_SUMMARY"
+          fi
