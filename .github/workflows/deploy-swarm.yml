@@ -7,6 +7,8 @@ on:
       - Dockerfile
       - nginx.conf
       - index.html
+      - compare.js
+      - view-state.js
       - docker-stack.yml
       - data/places.json
       - data/historic-maps.json
@@ -67,6 +69,8 @@ jobs:
           for i in $(seq 1 20); do
             if docker exec "$name" wget -qO- http://127.0.0.1/index.html >/dev/null; then
               docker exec "$name" wget -qO- http://127.0.0.1/data/places.json >/dev/null
+              docker exec "$name" wget -qO- http://127.0.0.1/compare.js >/dev/null
+              docker exec "$name" wget -qO- http://127.0.0.1/view-state.js >/dev/null
               exit 0
             fi
             sleep 1
