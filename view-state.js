@@ -5,15 +5,21 @@
   let restoring = true;
   let writeTimer = null;
   const pending = new Set();
+  const DEFAULT_VIEW = { lat: -33.39, lng: 151.39, zoom: 10 };
 
   const num = (name, fallback, min, max) => {
-    const value = Number(params.get(name));
+    const raw = params.get(name);
+    // URLSearchParams#get returns null for an absent value. Number(null) is 0,
+    // which previously made a URL without lat/lng restore the map at 0,0.
+    if (raw === null || String(raw).trim() === '') return fallback;
+    const value = Number(raw);
     return Number.isFinite(value) && value >= min && value <= max ? value : fallback;
   };
+
   const desired = {
-    lat: num('lat', -33.39, -90, 90),
-    lng: num('lng', 151.39, -180, 180),
-    zoom: Math.round(num('z', 10, 1, 20)),
+    lat: num('lat', DEFAULT_VIEW.lat, -90, 90),
+    lng: num('lng', DEFAULT_VIEW.lng, -180, 180),
+    zoom: Math.round(num('z', DEFAULT_VIEW.zoom, 1, 20)),
     base: params.get('base') || 'osm',
     imagery: params.get('imagery') || '',
     lidar: params.get('lidar') || 'latest',
@@ -23,6 +29,20 @@
     markers: params.get('markers') !== '0',
     researchYear: Math.round(num('research', 1950, 1820, 2100))
   };
+
+  // cchist is a Central Coast research map. Old URLs produced by the null→0
+  // bug should heal themselves instead of reopening on the equator. Keep this
+  // deliberately broader than the LiDAR AOI so nearby regional exploration is
+  // still possible.
+  const isCentralCoastRegion = (lat, lng) =>
+    Number.isFinite(lat) && Number.isFinite(lng) &&
+    lat >= -34.5 && lat <= -32.5 && lng >= 150.0 && lng <= 152.5;
+
+  if (!isCentralCoastRegion(desired.lat, desired.lng)) {
+    desired.lat = DEFAULT_VIEW.lat;
+    desired.lng = DEFAULT_VIEW.lng;
+    desired.zoom = DEFAULT_VIEW.zoom;
+  }
 
   function dispatch(el, type) {
     if (el) el.dispatchEvent(new Event(type, { bubbles: true }));
@@ -130,7 +150,12 @@
 
   function updateUrl() {
     if (restoring) return;
-    const center = map.getCenter();
+    let center = map.getCenter();
+    if (!isCentralCoastRegion(center.lat, center.lng)) {
+      map.setView([DEFAULT_VIEW.lat, DEFAULT_VIEW.lng], DEFAULT_VIEW.zoom, { animate: false });
+      center = map.getCenter();
+    }
+
     const out = new URLSearchParams();
     out.set('lat', center.lat.toFixed(6));
     out.set('lng', center.lng.toFixed(6));
