@@ -4,14 +4,11 @@ set -euo pipefail
 ROOT="${LIDAR_ROOT:-/mnt/usb/stack/cchist/lidar}"
 MANIFEST="${1:-data/lidar-downloads.txt}"
 PROCESS="${2:-true}"
-# Official OSGeo release image. Use ubuntu-small: it includes GDAL Python and
-# all raster features required here, while being much smaller than ubuntu-full.
 GDAL_IMAGE="ghcr.io/osgeo/gdal:ubuntu-small-3.13.3"
 RUNNER_UID="$(id -u)"
 RUNNER_GID="$(id -g)"
 
-# Broad Central Coast NSW AOI. Crop before reprojection/tile generation so a
-# state/national source archive does not produce web tiles outside the project.
+# Broad Central Coast NSW AOI. Crop before reprojection/tile generation.
 AOI_XMIN="${AOI_XMIN:-150.95}"
 AOI_YMIN="${AOI_YMIN:--33.62}"
 AOI_XMAX="${AOI_XMAX:-151.65}"
@@ -87,7 +84,7 @@ done < "$MANIFEST"
 echo "Manifest downloads processed: $count"
 
 # Extract archives without mutating originals. A marker tied to source mtime
-# avoids repeatedly unpacking the multi-gigabyte GA archive on every retry.
+# avoids repeatedly unpacking multi-gigabyte archives on every retry.
 python3 - "$ROOT" <<'PY'
 import os, sys, zipfile, tarfile
 root=sys.argv[1]
@@ -134,14 +131,88 @@ PY
   exit 0
 fi
 
+# Select the newest 1 m survey for each ELVIS tile. This prevents overlapping
+# Gosford 2011/2014/2020 DEMs from being mosaicked together. If no ELVIS 1 m
+# DEMs exist, fall back to the older 5 m/national DEM inputs.
+python3 - "$ROOT" <<'PY'
+import os,re,sys,json
+root=os.path.abspath(sys.argv[1])
+raw=os.path.join(root,'raw')
+working=os.path.join(root,'working')
+os.makedirs(working,exist_ok=True)
+
+dem=[]; laz=[]
+for base,_,files in os.walk(raw):
+    for fn in files:
+        p=os.path.join(base,fn)
+        low=fn.lower()
+        if low.endswith(('.tif','.tiff')): dem.append(p)
+        elif low.endswith(('.laz','.las')): laz.append(p)
+
+def survey_date(path):
+    m=re.search(r'(20\d{4})-LID1', os.path.basename(path), re.I)
+    return int(m.group(1)) if m else 0
+
+def tile_key(path):
+    name=os.path.basename(path)
+    m=re.search(r'_(\d{7})_56_0002_0002(?:_1m)?\.(?:tif|tiff|laz|las)$',name,re.I)
+    return m.group(1) if m else None
+
+def newest_per_tile(paths):
+    chosen={}; loose=[]
+    for p in paths:
+        k=tile_key(p)
+        if not k:
+            loose.append(p); continue
+        cur=chosen.get(k)
+        rank=(survey_date(p),p)
+        if cur is None or rank>(survey_date(cur),cur): chosen[k]=p
+    return [chosen[k] for k in sorted(chosen)], loose
+
+one_m=[p for p in dem if re.search(r'_1m\.(?:tif|tiff)$',os.path.basename(p),re.I)]
+if one_m:
+    selected_dem,_=newest_per_tile(one_m)
+    mode='latest-1m-per-tile'
+else:
+    selected_dem=sorted(dem)
+    mode='fallback-all-dem'
+
+selected_laz,_=newest_per_tile(laz)
+
+def container_path(p):
+    return '/data/'+os.path.relpath(p,root).replace(os.sep,'/')
+
+with open(os.path.join(working,'dem-list.txt'),'w') as f:
+    for p in selected_dem:f.write(container_path(p)+'\n')
+with open(os.path.join(working,'laz-list.txt'),'w') as f:
+    for p in selected_laz:f.write(container_path(p)+'\n')
+meta={
+  'mode':mode,
+  'availableDemFiles':len(dem),
+  'available1mDemFiles':len(one_m),
+  'selectedDemFiles':len(selected_dem),
+  'availablePointCloudFiles':len(laz),
+  'selectedPointCloudFiles':len(selected_laz),
+  'newestSurvey':max([survey_date(p) for p in selected_dem+selected_laz] or [0])
+}
+with open(os.path.join(working,'selection.json'),'w') as f:json.dump(meta,f,indent=2)
+print('DEM selection:',json.dumps(meta))
+print('Selected DEMs:')
+for p in selected_dem:print(' ',p)
+print('Selected LAZ/LAS inventory:',len(selected_laz))
+PY
+
+if [[ ! -s "$ROOT/working/dem-list.txt" ]]; then
+  echo "DEM selection produced no inputs."
+  exit 1
+fi
+
 CPUS="$(nproc)"
 echo "Generating Central Coast terrain products with $CPUS CPUs"
+cat "$ROOT/working/selection.json"
 
-# Deploy jobs log in to ghcr.io with this repository's GITHUB_TOKEN and Docker
-# persists those credentials on the self-hosted runner. Presenting that scoped
-# token to another organisation's public GHCR package can return 'denied'. Use
-# an empty, temporary DOCKER_CONFIG so the OSGeo image is pulled anonymously,
-# without modifying the runner's normal Docker credentials.
+# Deploy jobs can leave repo-scoped GHCR credentials on a self-hosted runner.
+# Pull OSGeo anonymously without changing the runner's normal Docker config.
 GDAL_DOCKER_CONFIG="$(mktemp -d "$ROOT/working/docker-anon.XXXXXX")"
 printf '%s\n' '{"auths":{}}' > "$GDAL_DOCKER_CONFIG/config.json"
 cleanup_gdal_config() { rm -rf "$GDAL_DOCKER_CONFIG"; }
@@ -150,13 +221,14 @@ trap cleanup_gdal_config EXIT
 DOCKER_CONFIG="$GDAL_DOCKER_CONFIG" docker pull "$GDAL_IMAGE"
 DOCKER_CONFIG="$GDAL_DOCKER_CONFIG" docker run --rm --entrypoint /bin/bash -v "$ROOT:/data" "$GDAL_IMAGE" -lc "
   set -euo pipefail
-  find /data/raw -type f \( -iname '*.tif' -o -iname '*.tiff' \) | sort > /data/working/dem-list.txt
-  echo 'DEM inputs:'
+  echo 'DEM inputs selected for mosaic:'
   cat /data/working/dem-list.txt
+  if [ -s /data/working/laz-list.txt ]; then
+    echo \"Selected classified point-cloud files: \$(wc -l < /data/working/laz-list.txt)\"
+  fi
+
   gdalbuildvrt -overwrite -input_file_list /data/working/dem-list.txt /data/derived/dem-source.vrt
 
-  # Crop in geographic coordinates while reprojecting to Web Mercator. This is
-  # especially important for GA's multi-gigabyte national Zone 56 mosaic.
   gdalwarp -overwrite \
     -te_srs EPSG:4326 -te $AOI_XMIN $AOI_YMIN $AOI_XMAX $AOI_YMAX \
     -t_srs EPSG:3857 -r bilinear -multi -wo NUM_THREADS=ALL_CPUS \
@@ -190,6 +262,10 @@ def count(ext,where):
     for b,_,fs in os.walk(where):
         n += sum(1 for f in fs if f.lower().endswith(ext))
     return n
+sel={}
+try:
+    with open(os.path.join(root,'working','selection.json')) as f:sel=json.load(f)
+except Exception: pass
 status={
   'ready': True,
   'updated': datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -198,6 +274,7 @@ status={
     'lazFiles': count('.laz',os.path.join(root,'raw')),
     'demFiles': count('.tif',os.path.join(root,'raw'))+count('.tiff',os.path.join(root,'raw'))
   },
+  'selection': sel,
   'layers': {
     'hillshade': {'available': True, 'minZoom': 9, 'maxZoom': 17},
     'slope': {'available': True, 'minZoom': 9, 'maxZoom': 17},
