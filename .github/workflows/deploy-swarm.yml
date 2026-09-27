@@ -9,6 +9,7 @@ on:
       - index.html
       - compare.js
       - view-state.js
+      - layout.js
       - docker-stack.yml
       - data/places.json
       - data/historic-maps.json
@@ -43,8 +44,17 @@ jobs:
       - name: Prepare persistent LiDAR storage
         run: |
           set -euo pipefail
-          mkdir -p /mnt/usb/stack/cchist/lidar/web
-          chmod 755 /mnt/usb/stack/cchist /mnt/usb/stack/cchist/lidar /mnt/usb/stack/cchist/lidar/web
+          root=/mnt/usb/stack/cchist/lidar/web
+          mkdir -p "$root"
+          chmod 755 /mnt/usb/stack/cchist /mnt/usb/stack/cchist/lidar "$root"
+          find "$root" -type d -exec chmod a+rX {} +
+          find "$root" -maxdepth 1 -type f -exec chmod 644 {} +
+          for f in status.json imagery.json; do
+            if [ -e "$root/$f" ]; then
+              chmod 644 "$root/$f"
+              echo "$f: $(stat -c '%a %U:%G %s bytes' "$root/$f")"
+            fi
+          done
 
       - name: Set image tag
         run: |
@@ -71,6 +81,7 @@ jobs:
               docker exec "$name" wget -qO- http://127.0.0.1/data/places.json >/dev/null
               docker exec "$name" wget -qO- http://127.0.0.1/compare.js >/dev/null
               docker exec "$name" wget -qO- http://127.0.0.1/view-state.js >/dev/null
+              docker exec "$name" wget -qO- http://127.0.0.1/layout.js >/dev/null
               exit 0
             fi
             sleep 1
@@ -102,6 +113,15 @@ jobs:
           done
           docker service ps "$service" --no-trunc
           exit 1
+
+      - name: Verify mounted LiDAR assets
+        run: |
+          set -euo pipefail
+          cid=$(docker ps --filter label=com.docker.swarm.service.name=cchist_cchist --format '{{.ID}}' | head -1)
+          test -n "$cid"
+          docker exec "$cid" sh -lc 'ls -l /usr/share/nginx/html/lidar/status.json /usr/share/nginx/html/lidar/imagery.json'
+          docker exec "$cid" wget -qO- http://127.0.0.1/lidar/status.json >/dev/null
+          docker exec "$cid" wget -qO- http://127.0.0.1/lidar/imagery.json >/dev/null
 
       - name: Verify HTTPS endpoint
         run: |
