@@ -1,4 +1,4 @@
-name: Deploy cchist to Swarm
+name: Deploy History Research Map to Swarm
 
 on:
   push:
@@ -7,13 +7,14 @@ on:
       - Dockerfile
       - nginx.conf
       - index.html
-      - compare.js
-      - compare-fix.js
+      - nsw-config.js
+      - compare-v2.js
       - terrain-change.js
       - imagery-filter.js
-      - research-scope.js
+      - research-scope-nsw.js
+      - elevation-index.js
       - branding.js
-      - view-state.js
+      - view-state-nsw.js
       - layout.js
       - docker-stack.yml
       - data/places.json
@@ -46,7 +47,7 @@ jobs:
           test "$(docker info --format '{{.Swarm.LocalNodeState}}')" = "active"
           test "$(docker info --format '{{.Swarm.ControlAvailable}}')" = "true"
 
-      - name: Prepare persistent LiDAR storage
+      - name: Prepare persistent research data storage
         run: |
           set -euo pipefail
           root=/mnt/usb/stack/cchist/lidar/web
@@ -54,11 +55,11 @@ jobs:
           chmod 755 /mnt/usb/stack/cchist /mnt/usb/stack/cchist/lidar "$root"
           docker run --rm -v "$root:/data" nginx:1.27-alpine sh -lc '
             chmod 755 /data
-            [ ! -e /data/status.json ] || chmod 644 /data/status.json
-            [ ! -e /data/imagery.json ] || chmod 644 /data/imagery.json
-            [ ! -e /data/change.json ] || chmod 644 /data/change.json
+            for f in status.json imagery.json elevation-index.json change.json; do
+              [ ! -e "/data/$f" ] || chmod 644 "/data/$f"
+            done
           '
-          for f in status.json imagery.json change.json; do
+          for f in status.json imagery.json elevation-index.json change.json; do
             if [ -e "$root/$f" ]; then
               echo "$f: $(stat -c '%a %U:%G %s bytes' "$root/$f")"
             fi
@@ -86,15 +87,29 @@ jobs:
           docker run -d --name "$name" "$IMAGE"
           for i in $(seq 1 20); do
             if docker exec "$name" wget -qO- http://127.0.0.1/index.html >/dev/null; then
-              docker exec "$name" wget -qO- http://127.0.0.1/data/places.json >/dev/null
-              docker exec "$name" wget -qO- http://127.0.0.1/compare.js >/dev/null
-              docker exec "$name" wget -qO- http://127.0.0.1/compare-fix.js >/dev/null
-              docker exec "$name" wget -qO- http://127.0.0.1/terrain-change.js >/dev/null
-              docker exec "$name" wget -qO- http://127.0.0.1/imagery-filter.js >/dev/null
-              docker exec "$name" wget -qO- http://127.0.0.1/research-scope.js >/dev/null
-              docker exec "$name" wget -qO- http://127.0.0.1/branding.js >/dev/null
-              docker exec "$name" wget -qO- http://127.0.0.1/view-state.js >/dev/null
-              docker exec "$name" wget -qO- http://127.0.0.1/layout.js >/dev/null
+              for path in \
+                data/places.json \
+                nsw-config.js \
+                compare-v2.js \
+                terrain-change.js \
+                imagery-filter.js \
+                research-scope-nsw.js \
+                elevation-index.js \
+                branding.js \
+                view-state-nsw.js \
+                layout.js; do
+                docker exec "$name" wget -qO- "http://127.0.0.1/$path" >/dev/null
+              done
+              html=$(docker exec "$name" wget -qO- http://127.0.0.1/index.html)
+              echo "$html" | grep -q '/nsw-config.js'
+              echo "$html" | grep -q '/compare-v2.js'
+              echo "$html" | grep -q '/research-scope-nsw.js'
+              echo "$html" | grep -q '/elevation-index.js'
+              echo "$html" | grep -q '/view-state-nsw.js'
+              if echo "$html" | grep -q '/compare-fix.js'; then
+                echo 'Obsolete compare-fix.js is still injected.'
+                exit 1
+              fi
               exit 0
             fi
             sleep 1
@@ -119,25 +134,27 @@ jobs:
           for i in $(seq 1 30); do
             replicas=$(docker service ls --filter name="$service" --format '{{.Replicas}}')
             echo "Replicas: $replicas"
-            if [ "$replicas" = "1/1" ]; then
-              exit 0
-            fi
+            if [ "$replicas" = "1/1" ]; then exit 0; fi
             sleep 5
           done
           docker service ps "$service" --no-trunc
           exit 1
 
-      - name: Verify mounted LiDAR assets
+      - name: Verify mounted research assets
         run: |
           set -euo pipefail
           cid=$(docker ps --filter label=com.docker.swarm.service.name=cchist_cchist --format '{{.ID}}' | head -1)
           test -n "$cid"
-          docker exec "$cid" sh -lc 'ls -l /usr/share/nginx/html/lidar/status.json /usr/share/nginx/html/lidar/imagery.json'
-          docker exec "$cid" wget -qO- http://127.0.0.1/lidar/status.json >/dev/null
-          docker exec "$cid" wget -qO- http://127.0.0.1/lidar/imagery.json >/dev/null
-          if docker exec "$cid" test -f /usr/share/nginx/html/lidar/change.json; then
-            docker exec "$cid" wget -qO- http://127.0.0.1/lidar/change.json >/dev/null
-          fi
+          for f in status.json imagery.json; do
+            docker exec "$cid" test -r "/usr/share/nginx/html/lidar/$f"
+            docker exec "$cid" wget -qO- "http://127.0.0.1/lidar/$f" >/dev/null
+          done
+          for f in elevation-index.json change.json; do
+            if docker exec "$cid" test -f "/usr/share/nginx/html/lidar/$f"; then
+              docker exec "$cid" test -r "/usr/share/nginx/html/lidar/$f"
+              docker exec "$cid" wget -qO- "http://127.0.0.1/lidar/$f" >/dev/null
+            fi
+          done
 
       - name: Verify HTTPS endpoint
         run: |
@@ -145,9 +162,7 @@ jobs:
           for i in $(seq 1 20); do
             code=$(curl -ksS -o /dev/null -w '%{http_code}' --connect-timeout 5 --max-time 15 https://cchist.virtualhowto.com/ || true)
             echo "HTTP status: $code"
-            case "$code" in
-              200|301|302|303|307|308) exit 0 ;;
-            esac
+            case "$code" in 200|301|302|303|307|308) exit 0 ;; esac
             sleep 3
           done
           exit 1
@@ -155,11 +170,10 @@ jobs:
       - name: Deployment summary
         if: success()
         run: |
-          echo "### cchist deployed" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Stack: cchist" >> "$GITHUB_STEP_SUMMARY"
+          echo '### History Research Map deployed' >> "$GITHUB_STEP_SUMMARY"
           echo "- Image: $IMAGE" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Site: https://cchist.virtualhowto.com" >> "$GITHUB_STEP_SUMMARY"
-          echo "- LiDAR web root: /mnt/usb/stack/cchist/lidar/web" >> "$GITHUB_STEP_SUMMARY"
+          echo '- Scope: NSW-wide client and catalogues; high-resolution terrain is local-cache aware' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Site: https://cchist.virtualhowto.com' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Service diagnostics on failure
         if: failure()
