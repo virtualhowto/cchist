@@ -48,11 +48,13 @@ jobs:
           root=/mnt/usb/stack/cchist/lidar/web
           mkdir -p "$root"
           chmod 755 /mnt/usb/stack/cchist /mnt/usb/stack/cchist/lidar "$root"
-          find "$root" -type d -exec chmod a+rX {} +
-          find "$root" -maxdepth 1 -type f -exec chmod 644 {} +
+          docker run --rm -v "$root:/data" nginx:1.27-alpine sh -lc '
+            chmod 755 /data
+            [ ! -e /data/status.json ] || chmod 644 /data/status.json
+            [ ! -e /data/imagery.json ] || chmod 644 /data/imagery.json
+          '
           for f in status.json imagery.json; do
             if [ -e "$root/$f" ]; then
-              chmod 644 "$root/$f"
               echo "$f: $(stat -c '%a %U:%G %s bytes' "$root/$f")"
             fi
           done
