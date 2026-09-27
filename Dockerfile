@@ -2,18 +2,28 @@ FROM nginx:1.27-alpine
 
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY index.html /usr/share/nginx/html/index.html
-COPY compare.js /usr/share/nginx/html/compare.js
-COPY compare-fix.js /usr/share/nginx/html/compare-fix.js
+COPY nsw-config.js /usr/share/nginx/html/nsw-config.js
+COPY compare-v2.js /usr/share/nginx/html/compare-v2.js
 COPY terrain-change.js /usr/share/nginx/html/terrain-change.js
 COPY imagery-filter.js /usr/share/nginx/html/imagery-filter.js
-COPY research-scope.js /usr/share/nginx/html/research-scope.js
+COPY research-scope-nsw.js /usr/share/nginx/html/research-scope-nsw.js
+COPY elevation-index.js /usr/share/nginx/html/elevation-index.js
 COPY branding.js /usr/share/nginx/html/branding.js
-COPY view-state.js /usr/share/nginx/html/view-state.js
+COPY view-state-nsw.js /usr/share/nginx/html/view-state-nsw.js
 COPY layout.js /usr/share/nginx/html/layout.js
 COPY data /usr/share/nginx/html/data
 
-# Keep client-side research modules directly readable by the unprivileged nginx worker.
-RUN chmod 644 /usr/share/nginx/html/index.html /usr/share/nginx/html/compare.js /usr/share/nginx/html/compare-fix.js /usr/share/nginx/html/terrain-change.js /usr/share/nginx/html/imagery-filter.js /usr/share/nginx/html/research-scope.js /usr/share/nginx/html/branding.js /usr/share/nginx/html/view-state.js /usr/share/nginx/html/layout.js \
+RUN chmod 644 \
+      /usr/share/nginx/html/index.html \
+      /usr/share/nginx/html/nsw-config.js \
+      /usr/share/nginx/html/compare-v2.js \
+      /usr/share/nginx/html/terrain-change.js \
+      /usr/share/nginx/html/imagery-filter.js \
+      /usr/share/nginx/html/research-scope-nsw.js \
+      /usr/share/nginx/html/elevation-index.js \
+      /usr/share/nginx/html/branding.js \
+      /usr/share/nginx/html/view-state-nsw.js \
+      /usr/share/nginx/html/layout.js \
     && find /usr/share/nginx/html/data -type d -exec chmod 755 {} \; \
     && find /usr/share/nginx/html/data -type f -exec chmod 644 {} \;
 
