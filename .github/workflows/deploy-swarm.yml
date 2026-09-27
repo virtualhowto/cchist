@@ -8,7 +8,7 @@ on:
       - nginx.conf
       - index.html
       - nsw-config.js
-      - compare-v2.js
+      - compare-v3.js
       - terrain-change.js
       - imagery-filter.js
       - research-scope-nsw.js
@@ -60,9 +60,7 @@ jobs:
             done
           '
           for f in status.json imagery.json elevation-index.json change.json; do
-            if [ -e "$root/$f" ]; then
-              echo "$f: $(stat -c '%a %U:%G %s bytes' "$root/$f")"
-            fi
+            if [ -e "$root/$f" ]; then echo "$f: $(stat -c '%a %U:%G %s bytes' "$root/$f")"; fi
           done
 
       - name: Set image tag
@@ -90,7 +88,7 @@ jobs:
               for path in \
                 data/places.json \
                 nsw-config.js \
-                compare-v2.js \
+                compare-v3.js \
                 terrain-change.js \
                 imagery-filter.js \
                 research-scope-nsw.js \
@@ -102,12 +100,13 @@ jobs:
               done
               html=$(docker exec "$name" wget -qO- http://127.0.0.1/index.html)
               echo "$html" | grep -q '/nsw-config.js'
-              echo "$html" | grep -q '/compare-v2.js'
+              echo "$html" | grep -q '/compare-v3.js'
               echo "$html" | grep -q '/research-scope-nsw.js'
               echo "$html" | grep -q '/elevation-index.js'
               echo "$html" | grep -q '/view-state-nsw.js'
-              if echo "$html" | grep -q '/compare-fix.js'; then
-                echo 'Obsolete compare-fix.js is still injected.'
+              echo "$html" | grep -q 'setView(\[-32.7,147.0\],6)'
+              if echo "$html" | grep -Eq '/compare(-fix|-v2)?\.js'; then
+                echo 'An obsolete comparison client is still injected.'
                 exit 1
               fi
               exit 0
@@ -145,16 +144,13 @@ jobs:
           set -euo pipefail
           cid=$(docker ps --filter label=com.docker.swarm.service.name=cchist_cchist --format '{{.ID}}' | head -1)
           test -n "$cid"
-          for f in status.json imagery.json; do
+          for f in status.json imagery.json elevation-index.json; do
             docker exec "$cid" test -r "/usr/share/nginx/html/lidar/$f"
             docker exec "$cid" wget -qO- "http://127.0.0.1/lidar/$f" >/dev/null
           done
-          for f in elevation-index.json change.json; do
-            if docker exec "$cid" test -f "/usr/share/nginx/html/lidar/$f"; then
-              docker exec "$cid" test -r "/usr/share/nginx/html/lidar/$f"
-              docker exec "$cid" wget -qO- "http://127.0.0.1/lidar/$f" >/dev/null
-            fi
-          done
+          if docker exec "$cid" test -f /usr/share/nginx/html/lidar/change.json; then
+            docker exec "$cid" wget -qO- http://127.0.0.1/lidar/change.json >/dev/null
+          fi
 
       - name: Verify HTTPS endpoint
         run: |
@@ -172,7 +168,8 @@ jobs:
         run: |
           echo '### History Research Map deployed' >> "$GITHUB_STEP_SUMMARY"
           echo "- Image: $IMAGE" >> "$GITHUB_STEP_SUMMARY"
-          echo '- Scope: NSW-wide client and catalogues; high-resolution terrain is local-cache aware' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Scope: NSW-wide research/catalogues; high-resolution terrain is local-cache aware' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Swipe: left full layer + screen-space clipped right layer' >> "$GITHUB_STEP_SUMMARY"
           echo '- Site: https://cchist.virtualhowto.com' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Service diagnostics on failure
