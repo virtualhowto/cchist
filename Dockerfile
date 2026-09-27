@@ -4,6 +4,7 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY index.html /usr/share/nginx/html/index.html
 COPY nsw-config.js /usr/share/nginx/html/nsw-config.js
 COPY compare-v3.js /usr/share/nginx/html/compare-v3.js
+COPY statewide-terrain.js /usr/share/nginx/html/statewide-terrain.js
 COPY terrain-change.js /usr/share/nginx/html/terrain-change.js
 COPY imagery-filter.js /usr/share/nginx/html/imagery-filter.js
 COPY research-scope-nsw.js /usr/share/nginx/html/research-scope-nsw.js
@@ -17,6 +18,7 @@ RUN chmod 644 \
       /usr/share/nginx/html/index.html \
       /usr/share/nginx/html/nsw-config.js \
       /usr/share/nginx/html/compare-v3.js \
+      /usr/share/nginx/html/statewide-terrain.js \
       /usr/share/nginx/html/terrain-change.js \
       /usr/share/nginx/html/imagery-filter.js \
       /usr/share/nginx/html/research-scope-nsw.js \
