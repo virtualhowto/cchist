@@ -13,6 +13,7 @@ on:
   push:
     branches: [main]
     paths:
+      - scripts/elvis-manager.sh
       - scripts/elvis-auto-import.sh
       - .github/workflows/elvis-auto-import.yml
 
@@ -37,11 +38,17 @@ jobs:
           set -euo pipefail
           test "$(hostname)" = "NUC8i7HNK"
           test -d /mnt/usb/stack/cchist/lidar
-          test -f /mnt/usb/stack/cchist/elvis-manager.sh
+          test -d /mnt/usb/stack/cchist
           command -v docker
           command -v python3
           command -v unzip
           docker info >/dev/null
+
+      - name: Install versioned ELVIS manager
+        run: |
+          set -euo pipefail
+          install -m 0755 scripts/elvis-manager.sh /mnt/usb/stack/cchist/elvis-manager.sh
+          /mnt/usb/stack/cchist/elvis-manager.sh --help >/dev/null
 
       - name: Auto import newly discovered surveys
         env:
