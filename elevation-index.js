@@ -100,6 +100,27 @@
   }
 
   function updateLocalControls() {
+    if (typeof window.cchistLidarAreaState === 'function') {
+      const state = window.cchistLidarAreaState();
+      const active = state?.active;
+      if (state?.mode === 'area' && active) {
+        const years = (active.years || []).join(', ');
+        const resolution = Number(active.targetResolutionMeters);
+        localEl.className = 'layerStatus ready';
+        localEl.textContent = `Local cache: ${active.name || active.slug}${years ? ` • ${years}` : ''}${Number.isFinite(resolution) ? ` • ${resolution} m` : ''}`;
+        return;
+      }
+      if (state?.mode === 'legacy') {
+        const years = Object.keys(state.legacy?.epochLayers || {}).sort((a,b)=>+a-+b);
+        localEl.className = 'layerStatus ready';
+        localEl.textContent = `Legacy local high-resolution cache available here${years.length ? ` • epochs ${years.join(', ')}` : ''}`;
+        return;
+      }
+      localEl.className = 'layerStatus';
+      localEl.textContent = 'No locally processed high-resolution terrain tiles for this view. Statewide terrain remains available; acquire/process an ELVIS export for local detail.';
+      return;
+    }
+
     if (!localStatus) return;
     const here = localAvailableHere();
     const checks = [...document.querySelectorAll('.lidarCheck')];
@@ -160,6 +181,7 @@
   });
   toggle.addEventListener('change', drawFootprints);
   map.on('moveend zoomend', queueRefresh);
+  document.addEventListener('lidarareachange', updateLocalControls);
 
   async function load() {
     try {
@@ -175,7 +197,6 @@
       }
       localStatus = statusResult.status === 'fulfilled' ? statusResult.value : null;
       refresh();
-      // Core LiDAR status loads independently; enforce coverage again after it finishes.
       setTimeout(updateLocalControls, 1200);
       setTimeout(updateLocalControls, 3500);
     } catch (err) {
