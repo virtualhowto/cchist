@@ -8,7 +8,8 @@ on:
       - nginx.conf
       - index.html
       - nsw-config.js
-      - compare-v3.js
+      - multi-area-lidar.js
+      - compare-v4.js
       - statewide-terrain.js
       - terrain-change.js
       - imagery-filter.js
@@ -52,15 +53,17 @@ jobs:
         run: |
           set -euo pipefail
           root=/mnt/usb/stack/cchist/lidar/web
-          mkdir -p "$root"
-          chmod 755 /mnt/usb/stack/cchist /mnt/usb/stack/cchist/lidar "$root"
+          mkdir -p "$root" "$root/areas"
+          chmod 755 /mnt/usb/stack/cchist /mnt/usb/stack/cchist/lidar "$root" "$root/areas"
           docker run --rm -v "$root:/data" nginx:1.27-alpine sh -lc '
-            chmod 755 /data
-            for f in status.json imagery.json elevation-index.json change.json; do
+            chmod 755 /data /data/areas
+            for f in status.json imagery.json elevation-index.json change.json areas.json elvis-index.json; do
               [ ! -e "/data/$f" ] || chmod 644 "/data/$f"
             done
+            find /data/areas -type d -exec chmod 755 {} \; 2>/dev/null || true
+            find /data/areas -type f -exec chmod 644 {} \; 2>/dev/null || true
           '
-          for f in status.json imagery.json elevation-index.json change.json; do
+          for f in status.json imagery.json elevation-index.json change.json areas.json elvis-index.json; do
             if [ -e "$root/$f" ]; then echo "$f: $(stat -c '%a %U:%G %s bytes' "$root/$f")"; fi
           done
 
@@ -89,7 +92,8 @@ jobs:
               for path in \
                 data/places.json \
                 nsw-config.js \
-                compare-v3.js \
+                multi-area-lidar.js \
+                compare-v4.js \
                 statewide-terrain.js \
                 terrain-change.js \
                 imagery-filter.js \
@@ -102,13 +106,14 @@ jobs:
               done
               html=$(docker exec "$name" wget -qO- http://127.0.0.1/index.html)
               echo "$html" | grep -q '/nsw-config.js'
-              echo "$html" | grep -q '/compare-v3.js'
+              echo "$html" | grep -q '/multi-area-lidar.js'
+              echo "$html" | grep -q '/compare-v4.js'
               echo "$html" | grep -q '/statewide-terrain.js'
               echo "$html" | grep -q '/research-scope-nsw.js'
               echo "$html" | grep -q '/elevation-index.js'
               echo "$html" | grep -q '/view-state-nsw.js'
               echo "$html" | grep -q 'setView(\[-32.7,147.0\],6)'
-              if echo "$html" | grep -Eq '/compare(-fix|-v2)?\.js'; then
+              if echo "$html" | grep -Eq '/compare(-fix|-v2|-v3)?\.js'; then
                 echo 'An obsolete comparison client is still injected.'
                 exit 1
               fi
@@ -151,8 +156,14 @@ jobs:
             docker exec "$cid" test -r "/usr/share/nginx/html/lidar/$f"
             docker exec "$cid" wget -qO- "http://127.0.0.1/lidar/$f" >/dev/null
           done
-          if docker exec "$cid" test -f /usr/share/nginx/html/lidar/change.json; then
-            docker exec "$cid" wget -qO- http://127.0.0.1/lidar/change.json >/dev/null
+          for f in change.json areas.json elvis-index.json; do
+            if docker exec "$cid" test -f "/usr/share/nginx/html/lidar/$f"; then
+              docker exec "$cid" test -r "/usr/share/nginx/html/lidar/$f"
+              docker exec "$cid" wget -qO- "http://127.0.0.1/lidar/$f" >/dev/null
+            fi
+          done
+          if docker exec "$cid" test -f /usr/share/nginx/html/lidar/areas.json; then
+            docker exec "$cid" sh -lc "wget -qO- http://127.0.0.1/lidar/areas.json | grep -q '\"areas\"'"
           fi
 
       - name: Verify HTTPS endpoint
@@ -171,8 +182,9 @@ jobs:
         run: |
           echo '### History Research Map deployed' >> "$GITHUB_STEP_SUMMARY"
           echo "- Image: $IMAGE" >> "$GITHUB_STEP_SUMMARY"
-          echo '- Scope: NSW-wide research/catalogues; high-resolution terrain is local-cache aware' >> "$GITHUB_STEP_SUMMARY"
-          echo '- Swipe: left full layer + screen-space clipped right layer' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Scope: NSW-wide research/catalogues; multi-area high-resolution terrain caches' >> "$GITHUB_STEP_SUMMARY"
+          echo '- LiDAR: automatic area selection from /lidar/areas.json with legacy AOI fallback' >> "$GITHUB_STEP_SUMMARY"
+          echo '- Swipe: historical aerial + location-aware named/legacy LiDAR sources' >> "$GITHUB_STEP_SUMMARY"
           echo '- Terrain baseline: Geoscience Australia 5 m LiDAR-derived DEM WMS' >> "$GITHUB_STEP_SUMMARY"
           echo '- Site: https://cchist.virtualhowto.com' >> "$GITHUB_STEP_SUMMARY"
 
