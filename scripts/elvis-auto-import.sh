@@ -87,7 +87,7 @@ echo '=== Refreshing ELVIS catalogue ==='
 [[ -s "$INDEX" ]] || { echo "Catalogue was not generated: $INDEX" >&2; exit 1; }
 
 mapfile -t pending < <(python3 - "$INDEX" "$AREAS" <<'PY'
-import json,sys
+import json,re,sys
 index_path,areas_path=sys.argv[1:]
 index=json.load(open(index_path))
 built=set()
@@ -96,8 +96,17 @@ try:
     for area in areas.get('areas',[]):
         if not area.get('ready'):
             continue
-        for survey in area.get('surveys',[]):
-            built.add(str(survey).strip().lower())
+        surveys=[str(s).strip() for s in area.get('surveys',[]) if str(s).strip()]
+        # A survey is considered complete only when its cache contains that survey
+        # alone and the area slug matches the survey name. This automatically
+        # repairs older mixed caches created by the pre-filter manager.
+        if len(surveys) != 1:
+            continue
+        survey=surveys[0]
+        expected_slug=re.sub(r'[^a-z0-9]+','-',survey.lower()).strip('-')
+        if str(area.get('slug') or '').lower() != expected_slug:
+            continue
+        built.add(survey.lower())
 except Exception:
     pass
 pending=[]
@@ -120,7 +129,7 @@ if (( ${#pending[@]} == 0 )); then
   exit 0
 fi
 
-echo '=== New survey names ==='
+echo '=== New or incomplete survey caches ==='
 printf '  %s\n' "${pending[@]}"
 
 built_count=0
