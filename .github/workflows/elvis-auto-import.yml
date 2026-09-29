@@ -1,0 +1,81 @@
+name: Auto Import New ELVIS Surveys
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_surveys:
+        description: Maximum new surveys to build this run (0 = unlimited)
+        required: false
+        default: '2'
+        type: string
+  schedule:
+    - cron: '7,37 * * * *'
+  push:
+    branches: [main]
+    paths:
+      - scripts/elvis-auto-import.sh
+      - .github/workflows/elvis-auto-import.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cchist-elvis-auto-import
+  cancel-in-progress: false
+
+jobs:
+  auto-import:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify ELVIS host
+        run: |
+          set -euo pipefail
+          test "$(hostname)" = "NUC8i7HNK"
+          test -d /mnt/usb/stack/cchist/lidar
+          test -f /mnt/usb/stack/cchist/elvis-manager.sh
+          command -v docker
+          command -v python3
+          command -v unzip
+          docker info >/dev/null
+
+      - name: Auto import newly discovered surveys
+        env:
+          LIDAR_ROOT: /mnt/usb/stack/cchist/lidar
+          ELVIS_MANAGER: /mnt/usb/stack/cchist/elvis-manager.sh
+        run: |
+          set -euo pipefail
+          chmod +x scripts/elvis-auto-import.sh
+          max='${{ inputs.max_surveys }}'
+          if [ -z "$max" ]; then max=2; fi
+          echo "Maximum surveys this run: $max"
+          ELVIS_AUTO_MAX_SURVEYS="$max" scripts/elvis-auto-import.sh
+
+      - name: Import summary
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, os
+          root='/mnt/usb/stack/cchist/lidar'
+          idx=os.path.join(root,'catalogue','elvis-index.json')
+          areas=os.path.join(root,'web','areas.json')
+          print('### ELVIS automatic import')
+          if os.path.exists(idx):
+              x=json.load(open(idx))
+              s=x.get('summary',{})
+              print(f"- Indexed packages: {s.get('packageCount',0)}")
+              print(f"- Indexed surveys: {s.get('surveyCount',0)}")
+              print(f"- DEM files: {s.get('demFiles',0)}")
+              print(f"- Point-cloud files: {s.get('pointCloudFiles',0)}")
+          if os.path.exists(areas):
+              x=json.load(open(areas))
+              built=[a for a in x.get('areas',[]) if a.get('ready')]
+              print(f"- Built multi-area caches: {len(built)}")
+              for a in built:
+                  surveys=', '.join(map(str,a.get('surveys',[]))) or a.get('name','unknown')
+                  print(f"  - {surveys}")
+          PY
